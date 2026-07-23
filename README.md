@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="#showcase">Showcase</a> ·
   <a href="#features">Features</a> ·
   <a href="#getting-started">Installation</a> ·
   <a href="#keyboard-shortcuts">Shortcuts</a> ·
@@ -31,6 +32,67 @@ message + attachment, list pins, fetch/delete a message) has a REST
 endpoint, and REST message fetches always return full content regardless of
 the privileged **Message Content Intent**. So there's one less toggle to
 flip when creating your bot.
+
+## Showcase
+
+<p align="center">
+  <img src="docs/screenshots/drive-dark.png" alt="BeanyDrive file list, dark theme" width="900">
+</p>
+
+<p align="center"><i>
+  Folders, tags, and a selected file's detail panel — the same terminal
+  chrome, titlebar, and settings pattern as BeanyBox.
+</i></p>
+
+### Light & dark
+
+Pick a theme in Settings (`,`) — Dark, Light, or System (follows your OS and
+switches live if it changes):
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/drive-light.png" alt="Light theme"></td>
+<td width="50%"><img src="docs/screenshots/drive-dark.png" alt="Dark theme"></td>
+</tr>
+<tr>
+<td align="center">Light</td>
+<td align="center">Dark</td>
+</tr>
+</table>
+
+### Every color, grid or list
+
+Eight accent colors, applied live everywhere — active rows, borders,
+buttons, the mode badge — plus a grid view alongside the default list:
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/settings.png" alt="Settings panel, red accent"></td>
+<td width="50%"><img src="docs/screenshots/settings-blue.png" alt="Settings panel, blue accent"></td>
+</tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/grid-view.png" alt="Grid view of files" width="900">
+</p>
+
+### In-app preview
+
+Images, PDFs (rendered page-by-page via pdf.js), and text/code open full-window
+without a Save As dialog:
+
+<table>
+<tr>
+<td width="33%"><img src="docs/screenshots/preview-image.png" alt="Image preview"></td>
+<td width="33%"><img src="docs/screenshots/preview-pdf.png" alt="PDF preview"></td>
+<td width="33%"><img src="docs/screenshots/preview-text.png" alt="Text preview"></td>
+</tr>
+<tr>
+<td align="center">Image</td>
+<td align="center">PDF</td>
+<td align="center">Text</td>
+</tr>
+</table>
 
 ## Features
 
