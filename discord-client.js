@@ -121,7 +121,7 @@ class DiscordDrive extends EventEmitter {
     this.channelId = null;
     this.channelName = null;
     this.guildName = null;
-    this.chunkSizeMb = 25;
+    this.chunkSizeMb = 10;
     this.chunkSize = null;
     this.metadata = { version: 3, files: [], folders: [] };
     this.metadataMessageId = null;
@@ -143,7 +143,7 @@ class DiscordDrive extends EventEmitter {
   async connect(token, channelId, chunkSizeMb) {
     this.token = token;
     this.channelId = String(channelId);
-    this.chunkSizeMb = chunkSizeMb || 25;
+    this.chunkSizeMb = chunkSizeMb || 10;
     this.status = 'connecting';
     this.emit('status', 'Connecting...');
     try {

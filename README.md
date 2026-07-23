@@ -179,7 +179,7 @@ BeanyDrive-*.AppImage`) and run it directly.
 
 ## Notes
 
-- **Chunk size**: configurable in Settings (default 25 MB), but the
+- **Chunk size**: configurable in Settings (default 10 MB), but the
   effective chunk size is always capped by your Discord server's real
   upload limit (based on its boost tier), the same auto-detection the
   original bot did. If Discord ever rejects a chunk as too large mid-upload,

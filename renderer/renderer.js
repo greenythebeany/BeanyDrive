@@ -176,7 +176,7 @@
     density: localStorage.getItem('beanydrive_density') || 'comfortable',
     systemDark: true,
 
-    settings: { channelId: '', chunkSizeMb: 25, hasToken: false },
+    settings: { channelId: '', chunkSizeMb: 10, hasToken: false },
     connection: { status: 'disconnected', message: '' },
     files: [],
     folders: [],
@@ -191,7 +191,7 @@
     settingsOpen: false,
     botTokenInput: '',
     channelIdInput: '',
-    chunkSizeInput: 25,
+    chunkSizeInput: 10,
     testResult: null,
 
     emptyTrashOpen: false,
@@ -648,7 +648,7 @@
   function saveSettingsForm() {
     const token = state.botTokenInput.trim() || undefined;
     const channelId = state.channelIdInput.trim();
-    const chunkSizeMb = Number(state.chunkSizeInput) || 25;
+    const chunkSizeMb = Number(state.chunkSizeInput) || 10;
     window.api.saveSettings({ token, channelId, chunkSizeMb }).then((res) => {
       state.settings = res.settings;
       state.botTokenInput = '';

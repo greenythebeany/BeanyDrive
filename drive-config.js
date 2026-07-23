@@ -36,7 +36,7 @@ function publicSettings() {
   const { tokenStore: store } = paths();
   return {
     channelId: cfg.channelId || '',
-    chunkSizeMb: cfg.chunkSizeMb || 25,
+    chunkSizeMb: cfg.chunkSizeMb || 10,
     hasToken: !!store.read(),
   };
 }
