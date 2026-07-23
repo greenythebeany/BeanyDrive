@@ -19,12 +19,12 @@
 ---
 
 BeanyDrive is GreenyBeany's Electron sibling to
-[DiscordCloudStorage](https://github.com/Gymoblig/DiscordCloudStorage) — same
+[DiscordCloudStorage](https://github.com/Greenythebeany/DiscordCloudStorage) — same
 idea (a Discord bot + channel become your storage backend: large files are
 split into chunks, uploaded as attachments, and reassembled on download; a
 pinned JSON message in the channel is the index, so nothing lives only on
 your machine), rebuilt as a proper desktop app with the same terminal-styled
-UI language as [BeanyBox](https://github.com/Gymoblig/BeanyBox).
+UI language as [BeanyBox](https://github.com/Greenythebeany/BeanyBox).
 
 Unlike the original Python bot, BeanyDrive talks to Discord purely over REST
 (no gateway/WebSocket connection) — every operation it needs (send a
