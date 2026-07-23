@@ -154,6 +154,12 @@ Node/npm needed; nothing is bundled inside it except the app itself — you
 still bring your own bot token and channel ID from the step above, entered
 in Settings on first launch.
 
+> **Windows will show a blue "Windows protected your PC" SmartScreen
+> warning the first time you run it.** That's expected for any small,
+> unsigned app (a code-signing certificate costs money neither of us has
+> spent) — it's not a virus detection. Click **More info**, then **Run
+> anyway**.
+
 **Option B: Run from source**
 
 ```sh
