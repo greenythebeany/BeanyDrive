@@ -71,6 +71,36 @@
   // else (office docs, archives) still only offers Download.
   const PREVIEWABLE = new Set(['image', 'pdf', 'text', 'code', 'video', 'audio']);
 
+  // User-created tags, layered on top of the built-in TAGS map (design/work/
+  // personal) and persisted locally — there's no server-side tag registry,
+  // just per-file tag ids, so the id → {name,color} mapping itself has to
+  // live somewhere durable.
+  const CUSTOM_TAG_IDS = new Set();
+  try {
+    const savedCustomTags = JSON.parse(localStorage.getItem('beanydrive_custom_tags') || '[]');
+    savedCustomTags.forEach((t) => {
+      if (t && t.id && t.name && !TAGS[t.id]) { TAGS[t.id] = { name: t.name, color: t.color || '#8a8a8a' }; CUSTOM_TAG_IDS.add(t.id); }
+    });
+  } catch (e) { /* corrupt/missing localStorage entry — start with no custom tags */ }
+
+  function saveCustomTags() {
+    const list = [...CUSTOM_TAG_IDS].map((id) => ({ id, name: TAGS[id].name, color: TAGS[id].color }));
+    localStorage.setItem('beanydrive_custom_tags', JSON.stringify(list));
+  }
+
+  function createCustomTag(rawName) {
+    const name = rawName.trim();
+    if (!name) return null;
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'tag';
+    let id = slug, n = 1;
+    while (TAGS[id]) { n += 1; id = `${slug}-${n}`; }
+    const color = ACCENTS[CUSTOM_TAG_IDS.size % ACCENTS.length].value;
+    TAGS[id] = { name, color };
+    CUSTOM_TAG_IDS.add(id);
+    saveCustomTags();
+    return id;
+  }
+
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -172,6 +202,7 @@
     uploads: [],
     dragOver: false,
     previewOverlay: null,
+    detailThumb: null,
   };
 
   let rowIds = [];
@@ -180,6 +211,7 @@
   let dragCounter = 0;
   let pdfjsLibPromise = null; // lazy-loaded, cached — only fetched the first time a PDF is previewed
   let pdfPreviewToken = 0; // bumped on every openPreview()/close so a stale async render can't stomp a newer one
+  let detailThumbToken = 0; // bumped whenever the selection changes so a stale thumb fetch can't stomp a newer one
 
   function accentHex() { return (ACCENTS.find((a) => a.id === state.accent) || ACCENTS[0]).value; }
   function effectiveTheme() { return state.theme === 'system' ? (state.systemDark ? 'dark' : 'light') : state.theme; }
@@ -257,8 +289,14 @@
   }
 
   // ---- actions ----------------------------------------------------------
+  // 'root'/'starred'/'recent'/'trash'/'tag:*' are virtual views, not real
+  // folder paths — uploads/new-folders made while viewing one of them land
+  // at the drive root instead of nesting under a fake path.
+  function isRealFolderNav(nav) {
+    return !['root', 'starred', 'recent', 'trash'].includes(nav) && !nav.startsWith('tag:');
+  }
   function destForUpload() {
-    return ['root', 'starred', 'recent', 'trash'].includes(state.nav) ? '' : state.nav;
+    return isRealFolderNav(state.nav) ? state.nav : '';
   }
   function startUpload(paths) {
     if (state.connection.status !== 'connected') { showToast('Not connected — open Settings (,) first'); return; }
@@ -337,6 +375,68 @@
       });
     }
     return pdfjsLibPromise;
+  }
+
+  // Auto-loads a small in-panel thumbnail for the currently selected image or
+  // PDF (first page only) file (detail pane, right side) — separate from
+  // openPreview()'s full-size modal, which still only opens on click/'p'.
+  function ensureDetailThumb(selFile) {
+    const cat = selFile ? categoryFor(selFile.name) : null;
+    const wantId = (cat === 'image' || cat === 'pdf') ? selFile.id : null;
+    if (state.detailThumb && state.detailThumb.fileId === wantId) return;
+    if (state.detailThumb && state.detailThumb.blobUrl) URL.revokeObjectURL(state.detailThumb.blobUrl);
+    if (!wantId) { state.detailThumb = null; return; }
+    const token = ++detailThumbToken;
+    state.detailThumb = { fileId: wantId, loading: true, blobUrl: null, error: null };
+    window.api.previewFile(wantId).then(async (res) => {
+      if (token !== detailThumbToken) return;
+      if (!res.ok) { state.detailThumb.loading = false; state.detailThumb.error = res.error || 'Preview failed'; render(); return; }
+      const blob = new Blob([res.bytes], { type: res.mime });
+      if (cat === 'image') {
+        state.detailThumb.blobUrl = URL.createObjectURL(blob);
+        state.detailThumb.loading = false;
+        render();
+        return;
+      }
+      // pdf: render page 1 onto an offscreen canvas, then snapshot it to an
+      // image blob — keeps the detail pane a plain <img>, like the image
+      // case, instead of a live <canvas> that doRender()'s innerHTML churn
+      // would tear out from under an in-flight render.
+      try {
+        const pdfjsLib = await loadPdfjs();
+        if (token !== detailThumbToken) return;
+        const buf = await blob.arrayBuffer();
+        if (token !== detailThumbToken) return;
+        const pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+        if (token !== detailThumbToken) return;
+        const page = await pdfDoc.getPage(1);
+        if (token !== detailThumbToken) return;
+        const unscaled = page.getViewport({ scale: 1 });
+        const scale = Math.min(1, 240 / unscaled.width, 240 / unscaled.height);
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement('canvas');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+        if (token !== detailThumbToken) return;
+        canvas.toBlob((pngBlob) => {
+          if (token !== detailThumbToken || !state.detailThumb) return;
+          state.detailThumb.blobUrl = URL.createObjectURL(pngBlob);
+          state.detailThumb.loading = false;
+          render();
+        });
+      } catch (err) {
+        if (token !== detailThumbToken || !state.detailThumb) return;
+        state.detailThumb.loading = false;
+        state.detailThumb.error = `Couldn't render PDF: ${err.message}`;
+        render();
+      }
+    }).catch((err) => {
+      if (token !== detailThumbToken || !state.detailThumb) return;
+      state.detailThumb.loading = false;
+      state.detailThumb.error = err.message || String(err);
+      render();
+    });
   }
 
   function previewSelected() {
@@ -518,7 +618,7 @@
       onSubmit: (val) => {
         const clean = val.replace(/[\\/]/g, '-').trim();
         if (!clean) return;
-        const parent = ['root', 'starred', 'recent', 'trash'].includes(state.nav) ? '' : state.nav;
+        const parent = isRealFolderNav(state.nav) ? state.nav : '';
         const target = joinPath(parent, clean);
         apiCall(window.api.createFolder(target), () => { state.nav = target; render(); });
       },
@@ -625,6 +725,10 @@
     const starredCount = files.filter((f) => f.starred && !f.trashed).length;
     const recentCount = Math.min(6, files.filter((f) => !f.trashed).length);
     const trashCount = files.filter((f) => f.trashed).length;
+    const tagNavItems = Object.keys(TAGS).map((id) => ({
+      id, name: TAGS[id].name, color: TAGS[id].color,
+      count: files.filter((f) => !f.trashed && (f.tags || []).includes(id)).length,
+    }));
 
     const mainNavDefs = [
       { id: 'root', label: 'My Drive', count: rootCount },
@@ -639,6 +743,9 @@
       rows = files.filter((f) => f.starred && !f.trashed).map((f) => ({ ...f, isFolder: false }));
     } else if (state.nav === 'recent') {
       rows = [...files].filter((f) => !f.trashed).sort((a, b) => b.created - a.created).slice(0, 6).map((f) => ({ ...f, isFolder: false }));
+    } else if (state.nav.startsWith('tag:')) {
+      const tagId = state.nav.slice(4);
+      rows = files.filter((f) => !f.trashed && (f.tags || []).includes(tagId)).map((f) => ({ ...f, isFolder: false }));
     } else {
       const cur = state.nav === 'root' ? '' : state.nav;
       const subFolders = foldersAt(files, folders, cur).map((fo) => ({
@@ -666,10 +773,12 @@
     rows.forEach((r) => { rowMeta[r.id] = r; });
 
     const breadcrumbMap = { root: 'My Drive', starred: 'Starred', recent: 'Recent', trash: 'Trash' };
-    const breadcrumb = breadcrumbMap[state.nav] || `My Drive / ${state.nav.split('/').join(' / ')}`;
+    const breadcrumb = state.nav.startsWith('tag:')
+      ? `Tag / ${(TAGS[state.nav.slice(4)] || {}).name || state.nav.slice(4)}`
+      : breadcrumbMap[state.nav] || `My Drive / ${state.nav.split('/').join(' / ')}`;
     const selFile = files.find((f) => f.id === state.selectedId && (state.nav === 'trash' ? f.trashed : true));
 
-    return { mainNavDefs, folderNavItems: rootFolders, rows, breadcrumb, selFile, trashCount };
+    return { mainNavDefs, folderNavItems: rootFolders, tagNavItems, rows, breadcrumb, selFile, trashCount };
   }
 
   function renderRowIcon(r, size) {
@@ -696,8 +805,9 @@
         const oversized = !r.isFolder && r.chunks && r.chunks.length > 1;
         return `
         <div class="file-card ${r.id === state.selectedId ? 'active' : ''}" data-row="${esc(String(r.id))}">
-          <div class="card-icon">${renderRowIcon(r, 20)}${oversized ? '<span class="card-flag" title="split into multiple chunks">!</span>' : ''}</div>
+          <div class="card-icon">${renderRowIcon(r, 34)}${oversized ? '<span class="card-flag" title="split into multiple chunks">!</span>' : ''}</div>
           <span class="card-name">${!r.isFolder && r.starred ? '★ ' : ''}${esc(r.name)}</span>
+          ${!r.isFolder && (r.tags || []).length ? `<div class="card-tags">${renderTagChips(r.tags)}</div>` : ''}
         </div>`;
       }).join('')}</div>`;
     }
@@ -705,7 +815,7 @@
       const showMeta = !r.isFolder && !state.compact;
       return `
       <div class="file-row ${r.id === state.selectedId ? 'active' : ''}" data-row="${esc(String(r.id))}">
-        <div class="file-icon">${renderRowIcon(r, 13)}</div>
+        <div class="file-icon">${renderRowIcon(r, 20)}</div>
         <div class="file-main">
           <span class="file-name" style="${r.id === state.selectedId ? `color:${accentHex()}` : ''}">${!r.isFolder && r.starred ? '★ ' : ''}${esc(r.name)}</span>
           ${showMeta ? `<div class="file-meta">
@@ -731,6 +841,13 @@
     const parentLabel = selFile.path ? `My Drive / ${selFile.path.split('/').join(' / ')}` : 'My Drive';
     const addable = Object.keys(TAGS).filter((t) => !(selFile.tags || []).includes(t));
     const previewable = PREVIEWABLE.has(cat);
+    let previewBody = previewTexts[cat] || previewTexts.other;
+    if (cat === 'image' || cat === 'pdf') {
+      const t = state.detailThumb;
+      if (t && t.fileId === selFile.id && t.blobUrl) previewBody = `<img class="detail-thumb" src="${t.blobUrl}" alt="${esc(selFile.name)}">`;
+      else if (t && t.fileId === selFile.id && t.error) previewBody = `<span class="dim-msg">${esc(t.error)}</span>`;
+      else previewBody = `<span class="dim-msg">loading…</span>`;
+    }
     return `
       <div class="detail-scroll">
         <div class="detail-name">${esc(selFile.name)}</div>
@@ -740,11 +857,12 @@
           <div class="detail-meta-row"><span class="k">path</span><span class="v">${esc(parentLabel)}</span></div>
           <div class="detail-meta-row"><span class="k">chunks</span><span class="v">${selFile.chunks ? selFile.chunks.length : 0}</span></div>
         </div>
-        <div class="detail-preview ${previewable ? 'clickable' : ''}" ${previewable ? 'id="detail-preview-trigger" title="Preview (p)"' : ''}>${previewTexts[cat] || previewTexts.other}</div>
+        <div class="detail-preview ${previewable ? 'clickable' : ''} ${(cat === 'image' || cat === 'pdf') ? 'has-thumb' : ''}" ${previewable ? 'id="detail-preview-trigger" title="Preview (p)"' : ''}>${previewBody}</div>
         <div class="detail-tags">
           ${(selFile.tags || []).map((t) => TAGS[t] ? `
             <span class="tag-chip" style="border-color:${TAGS[t].color};color:${TAGS[t].color}">${esc(TAGS[t].name)}<span class="tag-remove" data-remove-tag="${esc(t)}">×</span></span>` : '').join('')}
           ${addable.map((t) => `<span class="tag-add-chip" data-add-tag="${esc(t)}">+ ${esc(TAGS[t].name)}</span>`).join('')}
+          <span class="tag-add-chip tag-new-chip" id="add-new-tag-chip">+ new tag</span>
         </div>
         <div class="detail-actions">
           ${previewable ? '<div class="act-btn primary" id="act-preview">Preview</div>' : ''}
@@ -842,13 +960,14 @@
 
   function doRender() {
     const view = computeView();
+    ensureDetailThumb(view.selFile);
     const conn = connMeta();
     const listBody = document.getElementById('list-body');
     const prevScroll = listBody ? listBody.scrollTop : 0;
 
     const totalBytes = state.files.filter((f) => !f.trashed).reduce((a, f) => a + f.size, 0);
     const totalCount = state.files.filter((f) => !f.trashed).length;
-    const modeTag = state.nav === 'trash' ? 'TRASH' : (state.searchQuery ? 'SEARCH' : 'DRIVE');
+    const modeTag = state.nav === 'trash' ? 'TRASH' : (state.searchQuery ? 'SEARCH' : (state.nav.startsWith('tag:') ? 'TAG' : 'DRIVE'));
 
     root.innerHTML = `
       <div class="statusbar-top">
@@ -876,6 +995,14 @@
               <span class="nav-label">${esc(f.name)}</span>
               <span class="nav-count">${f.fileCount}</span>
             </div>`).join('')}
+          ${view.tagNavItems.length ? `<div class="sidebar-title folders">Tags</div>` : ''}
+          ${view.tagNavItems.map((t) => `
+            <div class="nav-item sub ${state.nav === `tag:${t.id}` ? 'active' : ''}" data-nav="tag:${esc(t.id)}">
+              <span class="nav-arrow">${state.nav === `tag:${t.id}` ? '▶' : ''}</span>
+              <span class="nav-icon" style="color:${t.color}">&#9679;</span>
+              <span class="nav-label">${esc(t.name)}</span>
+              <span class="nav-count">${t.count}</span>
+            </div>`).join('')}
           <div class="sidebar-title folders">Trash</div>
           <div class="nav-item ${state.nav === 'trash' ? 'active' : ''}" data-nav="trash">
             <span class="nav-arrow">${state.nav === 'trash' ? '▶' : ''}</span>
@@ -898,6 +1025,7 @@
               <div class="icon-btn" id="toggle-compact" title="toggle row density">${state.compact ? '▤ normal' : '▤ compact'}</div>
               <div class="icon-btn" id="toggle-view" title="toggle grid/list view">${state.viewMode === 'list' ? '▦ grid' : '☰ list'}</div>
               <div class="icon-btn" id="refresh-btn" title="refresh from Discord">↻</div>
+              <div class="icon-btn" id="new-folder-btn" title="new folder (n)">+ folder</div>
               <div class="icon-btn" id="upload-btn" title="upload">+ upload</div>
             </div>
             ${state.nav === 'trash' ? '<div class="empty-trash-link" id="empty-trash-link">Empty Trash</div>' : ''}
@@ -925,6 +1053,17 @@
 
       <div class="statusbar-bottom">
         <span class="mode-tag">${modeTag}</span>
+        <div class="hint-row">
+          <span class="hint"><span class="hint-key">[j/k]</span> nav</span>
+          <span class="hint"><span class="hint-key">[&#9166;]</span> open</span>
+          <span class="hint"><span class="hint-key">[u]</span> upload</span>
+          <span class="hint"><span class="hint-key">[n]</span> folder</span>
+          <span class="hint"><span class="hint-key">[r]</span> rename</span>
+          <span class="hint"><span class="hint-key">[p]</span> preview</span>
+          <span class="hint"><span class="hint-key">[space]</span> star</span>
+          <span class="hint"><span class="hint-key">[${state.nav === 'trash' ? 'x' : 'd'}]</span> ${state.nav === 'trash' ? 'restore' : 'trash'}</span>
+          <span class="hint"><span class="hint-key">[,]</span> settings</span>
+        </div>
         <span class="spacer"></span>
         <span class="storage-label">${fmtSize(totalBytes)} uploaded across ${totalCount} file(s)${state.connection.chunkLimitMb ? ` · ${state.connection.chunkLimitMb} MB chunks` : ''}</span>
       </div>
@@ -989,6 +1128,8 @@
     if (refreshBtn) refreshBtn.addEventListener('click', () => apiCall(window.api.refresh(), () => showToast('Refreshed')));
     const uploadBtn = document.getElementById('upload-btn');
     if (uploadBtn) uploadBtn.addEventListener('click', triggerUpload);
+    const newFolderBtn = document.getElementById('new-folder-btn');
+    if (newFolderBtn) newFolderBtn.addEventListener('click', newFolder);
     const emptyTrashLink = document.getElementById('empty-trash-link');
     if (emptyTrashLink) emptyTrashLink.addEventListener('click', requestEmptyTrash);
 
@@ -1033,6 +1174,18 @@
     root.querySelectorAll('[data-add-tag]').forEach((el) => el.addEventListener('click', () => {
       if (view.selFile) apiCall(window.api.addTag(view.selFile.id, el.dataset.addTag));
     }));
+    const newTagChip = document.getElementById('add-new-tag-chip');
+    if (newTagChip) newTagChip.addEventListener('click', () => {
+      const targetFile = view.selFile;
+      openPrompt({
+        title: 'New tag', value: '', submitLabel: 'Create',
+        onSubmit: (val) => {
+          const id = createCustomTag(val);
+          if (id && targetFile) apiCall(window.api.addTag(targetFile.id, id));
+          else render();
+        },
+      });
+    });
     root.querySelectorAll('[data-remove-tag]').forEach((el) => el.addEventListener('click', () => {
       if (view.selFile) apiCall(window.api.removeTag(view.selFile.id, el.dataset.removeTag));
     }));
