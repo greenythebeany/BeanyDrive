@@ -11,9 +11,37 @@
     work: { name: 'work', color: '#5cd68a' },
     personal: { name: 'personal', color: '#f0c419' },
   };
-  const ICONS = {
-    folder: '▣', image: '◆', text: '≡', pdf: '▤', video: '▶', audio: '♪',
-    sheet: '#', archive: '▦', word: 'W', ppt: 'P', code: '{}', other: '?',
+  // Font Awesome Free (Solid) icon paths — embedded inline so the app has
+  // no runtime dependency on a font file or CDN. Icons are CC BY 4.0:
+  // https://fontawesome.com/license/free
+  const FA_PATHS = {
+    folder: ['0 0 512 512', 'M64 448l384 0c35.3 0 64-28.7 64-64l0-240c0-35.3-28.7-64-64-64L298.7 80c-6.9 0-13.7-2.2-19.2-6.4L241.1 44.8C230 36.5 216.5 32 202.7 32L64 32C28.7 32 0 60.7 0 96L0 384c0 35.3 28.7 64 64 64z'],
+    folderOpen: ['0 0 576 512', 'M56 225.6L32.4 296.2 32.4 96c0-35.3 28.7-64 64-64l138.7 0c13.8 0 27.3 4.5 38.4 12.8l38.4 28.8c5.5 4.2 12.3 6.4 19.2 6.4l117.3 0c35.3 0 64 28.7 64 64l0 16-365.4 0c-41.3 0-78 26.4-91.1 65.6zM477.8 448L99 448c-32.8 0-55.9-32.1-45.5-63.2l48-144C108 221.2 126.4 208 147 208l378.8 0c32.8 0 55.9 32.1 45.5 63.2l-48 144c-6.5 19.6-24.9 32.8-45.5 32.8z'],
+    file: ['0 0 384 512', 'M64 0C28.7 0 0 28.7 0 64L0 448c0 35.3 28.7 64 64 64l256 0c35.3 0 64-28.7 64-64l0-277.5c0-17-6.7-33.3-18.7-45.3L258.7 18.7C246.7 6.7 230.5 0 213.5 0L64 0zM325.5 176L232 176c-13.3 0-24-10.7-24-24L208 58.5 325.5 176z'],
+    fileLines: ['0 0 384 512', 'M0 64C0 28.7 28.7 0 64 0L213.5 0c17 0 33.3 6.7 45.3 18.7L365.3 125.3c12 12 18.7 28.3 18.7 45.3L384 448c0 35.3-28.7 64-64 64L64 512c-35.3 0-64-28.7-64-64L0 64zm208-5.5l0 93.5c0 13.3 10.7 24 24 24L325.5 176 208 58.5zM120 256c-13.3 0-24 10.7-24 24s10.7 24 24 24l144 0c13.3 0 24-10.7 24-24s-10.7-24-24-24l-144 0zm0 96c-13.3 0-24 10.7-24 24s10.7 24 24 24l144 0c13.3 0 24-10.7 24-24s-10.7-24-24-24l-144 0z'],
+    filePdf: ['0 0 576 512', 'M96 0C60.7 0 32 28.7 32 64l0 384c0 35.3 28.7 64 64 64l80 0 0-112c0-35.3 28.7-64 64-64l176 0 0-165.5c0-17-6.7-33.3-18.7-45.3L290.7 18.7C278.7 6.7 262.5 0 245.5 0L96 0zM357.5 176L264 176c-13.3 0-24-10.7-24-24L240 58.5 357.5 176zM240 380c-11 0-20 9-20 20l0 128c0 11 9 20 20 20s20-9 20-20l0-28 12 0c33.1 0 60-26.9 60-60s-26.9-60-60-60l-32 0zm32 80l-12 0 0-40 12 0c11 0 20 9 20 20s-9 20-20 20zm96-80c-11 0-20 9-20 20l0 128c0 11 9 20 20 20l32 0c28.7 0 52-23.3 52-52l0-64c0-28.7-23.3-52-52-52l-32 0zm20 128l0-88 12 0c6.6 0 12 5.4 12 12l0 64c0 6.6-5.4 12-12 12l-12 0zm88-108l0 128c0 11 9 20 20 20s20-9 20-20l0-44 28 0c11 0 20-9 20-20s-9-20-20-20l-28 0 0-24 28 0c11 0 20-9 20-20s-9-20-20-20l-48 0c-11 0-20 9-20 20z'],
+    fileImage: ['0 0 384 512', 'M0 64C0 28.7 28.7 0 64 0L213.5 0c17 0 33.3 6.7 45.3 18.7L365.3 125.3c12 12 18.7 28.3 18.7 45.3L384 448c0 35.3-28.7 64-64 64L64 512c-35.3 0-64-28.7-64-64L0 64zm208-5.5l0 93.5c0 13.3 10.7 24 24 24L325.5 176 208 58.5zM128 256a32 32 0 1 0 -64 0 32 32 0 1 0 64 0zM92.6 448l198.8 0c15.8 0 28.6-12.8 28.6-28.6 0-7.3-2.8-14.4-7.9-19.7L215.3 297.9c-6-6.3-14.4-9.9-23.2-9.9l-.3 0c-8.8 0-17.1 3.6-23.2 9.9L71.9 399.7C66.8 405 64 412.1 64 419.4 64 435.2 76.8 448 92.6 448z'],
+    fileVideo: ['0 0 384 512', 'M0 64C0 28.7 28.7 0 64 0L213.5 0c17 0 33.3 6.7 45.3 18.7L365.3 125.3c12 12 18.7 28.3 18.7 45.3L384 448c0 35.3-28.7 64-64 64L64 512c-35.3 0-64-28.7-64-64L0 64zm208-5.5l0 93.5c0 13.3 10.7 24 24 24L325.5 176 208 58.5zM80 304l0 96c0 17.7 14.3 32 32 32l96 0c17.7 0 32-14.3 32-32l0-24 35 35c3.2 3.2 7.5 5 12 5 9.4 0 17-7.6 17-17l0-94.1c0-9.4-7.6-17-17-17-4.5 0-8.8 1.8-12 5l-35 35 0-24c0-17.7-14.3-32-32-32l-96 0c-17.7 0-32 14.3-32 32z'],
+    fileAudio: ['0 0 384 512', 'M0 64C0 28.7 28.7 0 64 0L213.5 0c17 0 33.3 6.7 45.3 18.7L365.3 125.3c12 12 18.7 28.3 18.7 45.3L384 448c0 35.3-28.7 64-64 64L64 512c-35.3 0-64-28.7-64-64L0 64zm208-5.5l0 93.5c0 13.3 10.7 24 24 24L325.5 176 208 58.5zm53.8 185.2c-9.1-6.3-21.5-4.1-27.8 5s-4.1 21.5 5 27.8c23.9 16.7 39.4 44.3 39.4 75.5s-15.6 58.9-39.4 75.5c-9.1 6.3-11.3 18.8-5 27.8s18.8 11.3 27.8 5c34.1-23.8 56.6-63.5 56.6-108.3S296 267.5 261.8 243.7zM80 312c-8.8 0-16 7.2-16 16l0 48c0 8.8 7.2 16 16 16l24 0 27.2 34c3 3.8 7.6 6 12.5 6l.3 0c8.8 0 16-7.2 16-16l0-128c0-8.8-7.2-16-16-16l-.3 0c-4.9 0-9.5 2.2-12.5 6l-27.2 34-24 0zm128 72.2c0 10.7 10.5 18.2 18.9 11.6 12.9-10.3 21.1-26.1 21.1-43.8s-8.2-33.5-21.1-43.8c-8.4-6.7-18.9 .9-18.9 11.6l0 64.5z'],
+    fileExcel: ['0 0 384 512', 'M0 64C0 28.7 28.7 0 64 0L213.5 0c17 0 33.3 6.7 45.3 18.7L365.3 125.3c12 12 18.7 28.3 18.7 45.3L384 448c0 35.3-28.7 64-64 64L64 512c-35.3 0-64-28.7-64-64L0 64zm208-5.5l0 93.5c0 13.3 10.7 24 24 24L325.5 176 208 58.5zM164 266.7c-7.4-11-22.3-14-33.3-6.7s-14 22.3-6.7 33.3L163.2 352 124 410.7c-7.4 11-4.4 25.9 6.7 33.3s25.9 4.4 33.3-6.7l28-42 28 42c7.4 11 22.3 14 33.3 6.7s14-22.3 6.7-33.3L220.8 352 260 293.3c7.4-11 4.4-25.9-6.7-33.3s-25.9-4.4-33.3 6.7l-28 42-28-42z'],
+    fileWord: ['0 0 384 512', 'M0 64C0 28.7 28.7 0 64 0L213.5 0c17 0 33.3 6.7 45.3 18.7L365.3 125.3c12 12 18.7 28.3 18.7 45.3L384 448c0 35.3-28.7 64-64 64L64 512c-35.3 0-64-28.7-64-64L0 64zm208-5.5l0 93.5c0 13.3 10.7 24 24 24L325.5 176 208 58.5zM135.4 274.8c-2.9-12.9-15.7-21.1-28.6-18.2s-21.1 15.7-18.2 28.6l32 144c2.3 10.5 11.4 18.2 22.2 18.8s20.6-6.1 24-16.4l25.2-75.7 25.2 75.7c3.4 10.2 13.2 16.9 24 16.4s19.9-8.2 22.2-18.8l32-144c2.9-12.9-5.3-25.8-18.2-28.6s-25.8 5.3-28.6 18.2l-13.2 59.4-20.6-61.8c-3.3-9.8-12.4-16.4-22.8-16.4s-19.5 6.6-22.8 16.4l-20.6 61.8-13.2-59.4z'],
+    filePowerpoint: ['0 0 384 512', 'M0 64C0 28.7 28.7 0 64 0L213.5 0c17 0 33.3 6.7 45.3 18.7L365.3 125.3c12 12 18.7 28.3 18.7 45.3L384 448c0 35.3-28.7 64-64 64L64 512c-35.3 0-64-28.7-64-64L0 64zm208-5.5l0 93.5c0 13.3 10.7 24 24 24L325.5 176 208 58.5zM152 256c-13.3 0-24 10.7-24 24l0 144c0 13.3 10.7 24 24 24s24-10.7 24-24l0-24 24 0c39.8 0 72-32.2 72-72s-32.2-72-72-72l-48 0zm48 96l-24 0 0-48 24 0c13.3 0 24 10.7 24 24s-10.7 24-24 24z'],
+    fileZipper: ['0 0 384 512', 'M0 64C0 28.7 28.7 0 64 0L213.5 0c17 0 33.3 6.7 45.3 18.7L365.3 125.3c12 12 18.7 28.3 18.7 45.3L384 448c0 35.3-28.7 64-64 64L64 512c-35.3 0-64-28.7-64-64L0 64zm208-5.5l0 93.5c0 13.3 10.7 24 24 24L325.5 176 208 58.5zM64 72c0 13.3 10.7 24 24 24l48 0c13.3 0 24-10.7 24-24s-10.7-24-24-24L88 48C74.7 48 64 58.7 64 72zm0 96c0 13.3 10.7 24 24 24l48 0c13.3 0 24-10.7 24-24s-10.7-24-24-24l-48 0c-13.3 0-24 10.7-24 24zm64 72l-32 0c-17.7 0-32 14.3-32 32l0 48c0 26.5 21.5 48 48 48s48-21.5 48-48l0-48c0-17.7-14.3-32-32-32zm-16 64a16 16 0 1 1 0 32 16 16 0 1 1 0-32z'],
+    fileCode: ['0 0 384 512', 'M0 64C0 28.7 28.7 0 64 0L213.5 0c17 0 33.3 6.7 45.3 18.7L365.3 125.3c12 12 18.7 28.3 18.7 45.3L384 448c0 35.3-28.7 64-64 64L64 512c-35.3 0-64-28.7-64-64L0 64zm208-5.5l0 93.5c0 13.3 10.7 24 24 24L325.5 176 208 58.5zM154.2 295.6c8.6-10.1 7.5-25.2-2.6-33.8s-25.2-7.5-33.8 2.6l-48 56c-7.7 9-7.7 22.2 0 31.2l48 56c8.6 10.1 23.8 11.2 33.8 2.6s11.2-23.8 2.6-33.8l-34.6-40.4 34.6-40.4zm112-31.2c-8.6-10.1-23.8-11.2-33.8-2.6s-11.2 23.8-2.6 33.8l34.6 40.4-34.6 40.4c-8.6 10.1-7.5 25.2 2.6 33.8s25.2 7.5 33.8-2.6l48-56c7.7-9 7.7-22.2 0-31.2l-48-56z'],
+    trashCan: ['0 0 448 512', 'M136.7 5.9C141.1-7.2 153.3-16 167.1-16l113.9 0c13.8 0 26 8.8 30.4 21.9L320 32 416 32c17.7 0 32 14.3 32 32s-14.3 32-32 32L32 96C14.3 96 0 81.7 0 64S14.3 32 32 32l96 0 8.7-26.1zM32 144l384 0 0 304c0 35.3-28.7 64-64 64L96 512c-35.3 0-64-28.7-64-64l0-304zm88 64c-13.3 0-24 10.7-24 24l0 192c0 13.3 10.7 24 24 24s24-10.7 24-24l0-192c0-13.3-10.7-24-24-24zm104 0c-13.3 0-24 10.7-24 24l0 192c0 13.3 10.7 24 24 24s24-10.7 24-24l0-192c0-13.3-10.7-24-24-24zm104 0c-13.3 0-24 10.7-24 24l0 192c0 13.3 10.7 24 24 24s24-10.7 24-24l0-192c0-13.3-10.7-24-24-24z'],
+    boxOpen: ['0 0 640 512', 'M560.3 237.2c10.4 11.8 28.3 14.4 41.8 5.5 14.7-9.8 18.7-29.7 8.9-44.4l-48-72c-2.8-4.2-6.6-7.7-11.1-10.2L351.4 4.7c-19.3-10.7-42.8-10.7-62.2 0L88.8 116c-5.4 3-9.7 7.4-12.6 12.8L27.7 218.7c-12.6 23.4-3.8 52.5 19.6 65.1l33 17.7 0 53.3c0 23 12.4 44.3 32.4 55.7l176 99.7c19.6 11.1 43.5 11.1 63.1 0l176-99.7c20.1-11.4 32.4-32.6 32.4-55.7l0-117.5zm-240-9.8L170.2 144 320.3 60.6 470.4 144 320.3 227.4zm-41.5 50.2l-21.3 46.2-165.8-88.8 25.4-47.2 161.7 89.8z'],
+  };
+
+  function faIcon(name, size) {
+    const entry = FA_PATHS[name] || FA_PATHS.file;
+    const [viewBox, d] = entry;
+    return `<svg class="fa-icon" viewBox="${viewBox}" width="${size}" height="${size}" fill="currentColor" aria-hidden="true"><path d="${d}"/></svg>`;
+  }
+
+  const CATEGORY_ICON = {
+    image: 'fileImage', video: 'fileVideo', audio: 'fileAudio', pdf: 'filePdf',
+    sheet: 'fileExcel', word: 'fileWord', ppt: 'filePowerpoint', archive: 'fileZipper',
+    code: 'fileCode', text: 'fileLines', other: 'file',
   };
   const EXT_MAP = {
     png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', bmp: 'image', webp: 'image', svg: 'image',
@@ -443,9 +471,9 @@
     return { mainNavDefs, folderNavItems: rootFolders, rows, breadcrumb, selFile, trashCount };
   }
 
-  function renderRowIcon(r) {
-    if (r.isFolder) return ICONS.folder;
-    return ICONS[categoryFor(r.name)] || ICONS.other;
+  function renderRowIcon(r, size) {
+    if (r.isFolder) return faIcon(r.fileCount === 0 ? 'folderOpen' : 'folder', size);
+    return faIcon(CATEGORY_ICON[categoryFor(r.name)] || 'file', size);
   }
 
   function renderTagChips(tags) {
@@ -463,17 +491,20 @@
 
   function buildRows(rows) {
     if (state.viewMode === 'grid') {
-      return `<div class="file-grid">${rows.map((r) => `
+      return `<div class="file-grid">${rows.map((r) => {
+        const oversized = !r.isFolder && r.chunks && r.chunks.length > 1;
+        return `
         <div class="file-card ${r.id === state.selectedId ? 'active' : ''}" data-row="${esc(String(r.id))}">
-          <div class="card-icon">${renderRowIcon(r)}${!r.isFolder && r.oversized ? '<span class="card-flag">!</span>' : ''}</div>
+          <div class="card-icon">${renderRowIcon(r, 20)}${oversized ? '<span class="card-flag" title="split into multiple chunks">!</span>' : ''}</div>
           <span class="card-name">${!r.isFolder && r.starred ? '★ ' : ''}${esc(r.name)}</span>
-        </div>`).join('')}</div>`;
+        </div>`;
+      }).join('')}</div>`;
     }
     return rows.map((r) => {
       const showMeta = !r.isFolder && !state.compact;
       return `
       <div class="file-row ${r.id === state.selectedId ? 'active' : ''}" data-row="${esc(String(r.id))}">
-        <div class="file-icon">${renderRowIcon(r)}</div>
+        <div class="file-icon">${renderRowIcon(r, 13)}</div>
         <div class="file-main">
           <span class="file-name" style="${r.id === state.selectedId ? `color:${accentHex()}` : ''}">${!r.isFolder && r.starred ? '★ ' : ''}${esc(r.name)}</span>
           ${showMeta ? `<div class="file-meta">
@@ -488,7 +519,7 @@
   }
 
   function buildDetail(selFile) {
-    if (!selFile) return '<div class="detail-empty">select a file to preview</div>';
+    if (!selFile) return `<div class="detail-empty"><div class="empty-icon">${faIcon('fileLines', 28)}</div><div>select a file to preview</div></div>`;
     const cat = categoryFor(selFile.name);
     const previewTexts = {
       image: '[ image preview ]', text: '[ text preview ]', pdf: '[ pdf preview ]',
@@ -638,12 +669,14 @@
           ${view.folderNavItems.map((f) => `
             <div class="nav-item sub ${state.nav === f.path ? 'active' : ''}" data-nav="${esc(f.path)}">
               <span class="nav-arrow">${state.nav === f.path ? '▶' : ''}</span>
+              <span class="nav-icon">${faIcon(f.fileCount === 0 ? 'folderOpen' : 'folder', 12)}</span>
               <span class="nav-label">${esc(f.name)}</span>
               <span class="nav-count">${f.fileCount}</span>
             </div>`).join('')}
           <div class="sidebar-title folders">Trash</div>
           <div class="nav-item ${state.nav === 'trash' ? 'active' : ''}" data-nav="trash">
             <span class="nav-arrow">${state.nav === 'trash' ? '▶' : ''}</span>
+            <span class="nav-icon">${faIcon('trashCan', 12)}</span>
             <span class="nav-label">Trash</span>
             <span class="nav-count">${view.trashCount}</span>
           </div>
@@ -676,7 +709,10 @@
             ${state.connection.status !== 'connected' ? `
               <div class="center-msg">${esc(conn.label === 'not connected' ? 'Not connected — open Settings (,) to add your bot token and channel ID.' : conn.label)}</div>`
               : (view.rows.length === 0 && state.uploads.length === 0 ? `
-              <div class="empty-state">${state.searchQuery ? `No results for "${esc(state.searchQuery)}"` : 'This folder is empty. Press u or drag files in to upload.'}</div>`
+              <div class="empty-state">
+                <div class="empty-icon">${faIcon(state.searchQuery ? 'file' : 'folderOpen', 32)}</div>
+                <div>${state.searchQuery ? `No results for "${esc(state.searchQuery)}"` : 'This folder is empty. Press u or drag files in to upload.'}</div>
+              </div>`
               : buildRows(view.rows))}
           </div>
         </div>

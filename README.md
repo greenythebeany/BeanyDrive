@@ -130,3 +130,6 @@ BeanyDrive-*.AppImage`) and run it directly.
 - **Token storage**: encrypted the same way as BeanyBox's mail tokens and
   lives only in the main process — the renderer never sees it, only
   whether one's saved.
+- **Icons**: folder and file-type icons are [Font Awesome Free](https://fontawesome.com)
+  (Solid), embedded inline as SVG so there's no runtime font/CDN dependency.
+  Icons are licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
