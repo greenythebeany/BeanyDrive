@@ -645,6 +645,12 @@
   function setAccent(a) { state.accent = a; localStorage.setItem('beanydrive_accent', a); applyThemeVars(); render(); }
   function setDensity(d) { state.density = d; localStorage.setItem('beanydrive_density', d); applyThemeVars(); render(); }
 
+  function stepChunkSize(delta) {
+    const current = Number(state.chunkSizeInput) || 0;
+    state.chunkSizeInput = Math.max(1, Math.min(100, current + delta));
+    render();
+  }
+
   function saveSettingsForm() {
     const token = state.botTokenInput.trim() || undefined;
     const channelId = state.channelIdInput.trim();
@@ -899,7 +905,11 @@
 
         <div class="settings-section-gap">
           <div class="settings-label">Chunk size (MB)</div>
-          <input class="settings-input" id="chunk-input" type="number" min="1" max="100" value="${esc(String(state.chunkSizeInput))}">
+          <div class="stepper-row">
+            <div class="icon-btn stepper-btn" id="chunk-decrement">−</div>
+            <input class="settings-input stepper-input" id="chunk-input" type="number" min="1" max="100" value="${esc(String(state.chunkSizeInput))}">
+            <div class="icon-btn stepper-btn" id="chunk-increment">+</div>
+          </div>
         </div>
 
         <div class="settings-row-inline">
@@ -1199,6 +1209,10 @@
     if (channelInput) channelInput.addEventListener('input', (e) => { state.channelIdInput = e.target.value; });
     const chunkInput = document.getElementById('chunk-input');
     if (chunkInput) chunkInput.addEventListener('input', (e) => { state.chunkSizeInput = e.target.value; });
+    const chunkDec = document.getElementById('chunk-decrement');
+    if (chunkDec) chunkDec.addEventListener('click', () => stepChunkSize(-1));
+    const chunkInc = document.getElementById('chunk-increment');
+    if (chunkInc) chunkInc.addEventListener('click', () => stepChunkSize(1));
     const testBtn = document.getElementById('test-connection-btn');
     if (testBtn) testBtn.addEventListener('click', testConnectionAction);
     const saveBtn = document.getElementById('settings-save-btn');

@@ -255,6 +255,18 @@ input::placeholder { color: var(--text-dimmer); }
   padding: 7px 8px; font-family: inherit; margin-bottom: 8px; width: 100%; outline: none;
 }
 .settings-input:focus { border-color: var(--accent); }
+.stepper-row { display: flex; align-items: stretch; gap: 6px; margin-bottom: 8px; }
+.stepper-input { margin-bottom: 0; text-align: center; flex: 1; }
+/* Replace the native number-input spinner (rounded, OS-themed, out of
+   place next to the app's flat bordered controls) with the .stepper-btn
+   +/- pair above instead. */
+.stepper-input::-webkit-outer-spin-button,
+.stepper-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.stepper-input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+.stepper-btn {
+  width: 30px; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 13px; user-select: none;
+}
 .settings-row-inline { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
 .settings-section-gap { margin-bottom: 16px; }
 .option-row { display: flex; gap: 6px; margin-bottom: 16px; }
