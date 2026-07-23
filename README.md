@@ -16,6 +16,12 @@
   <a href="#notes">Notes</a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/Greenythebeany/BeanyDrive/releases">
+    <img src="download_icon.png" alt="Download BeanyDrive" height="160">
+  </a>
+</p>
+
 ---
 
 BeanyDrive is GreenyBeany's Electron sibling to
@@ -141,14 +147,24 @@ without a Save As dialog:
 
 ### 2. Install & run
 
+**Option A: Download (recommended)** — grab the latest portable `.exe` or
+NSIS installer (Windows) or `.AppImage` (Linux) from the
+[Releases page](https://github.com/Greenythebeany/BeanyDrive/releases). No
+Node/npm needed; nothing is bundled inside it except the app itself — you
+still bring your own bot token and channel ID from the step above, entered
+in Settings on first launch.
+
+**Option B: Run from source**
+
 ```sh
 npm install
 npm start
 ```
 
-Open **Settings** (the `, settings` link, or press `,`), paste the bot
-token and channel ID, and click **Save & connect**. Use **Test connection**
-first if you just want to verify the token/channel without saving yet.
+Either way: open **Settings** (the `, settings` link, or press `,`), paste
+the bot token and channel ID, and click **Save & connect**. Use **Test
+connection** first if you just want to verify the token/channel without
+saving yet.
 
 ### 3. Build a standalone app (optional)
 
