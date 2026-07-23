@@ -1,0 +1,50 @@
+{
+  "name": "beanydrive",
+  "productName": "BeanyDrive",
+  "version": "1.0.0",
+  "description": "GreenyBeany's terminal-styled desktop client for Discord-backed cloud storage",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "electron": "^31.3.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "dev.greenybeany.beanydrive",
+    "productName": "BeanyDrive",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "discord-client.js",
+      "drive-config.js",
+      "util.js",
+      "icon.png",
+      "renderer/**/*"
+    ],
+    "icon": "icon.png",
+    "win": {
+      "target": [
+        "portable",
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Utility"
+    }
+  },
+  "allowScripts": {
+    "electron@31.7.7": true
+  }
+}
