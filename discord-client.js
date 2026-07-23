@@ -313,20 +313,27 @@ class DiscordDrive extends EventEmitter {
     return out;
   }
 
+  async _fetchChunkBytes(msgId) {
+    const msg = await this._request(`/channels/${this.channelId}/messages/${msgId}`);
+    const att = msg.attachments && msg.attachments[0];
+    if (!att) throw new Error(`Chunk message ${msgId} has no attachment`);
+    const res = await fetch(att.url);
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  getEntry(fileId) {
+    return this.metadata.files.find((f) => f.id === fileId) || null;
+  }
+
   async download(fileId, destPath, onProgress) {
     this._ensureReady();
-    const entry = this.metadata.files.find((f) => f.id === fileId);
+    const entry = this.getEntry(fileId);
     if (!entry) throw new Error(`File ${fileId} not in metadata`);
     const total = entry.chunks.length;
     const handle = await fsp.open(destPath, 'w');
     try {
       for (let i = 0; i < total; i++) {
-        const msg = await this._request(`/channels/${this.channelId}/messages/${entry.chunks[i]}`);
-        const att = msg.attachments && msg.attachments[0];
-        if (!att) throw new Error(`Chunk message ${entry.chunks[i]} has no attachment`);
-        const res = await fetch(att.url);
-        const buf = Buffer.from(await res.arrayBuffer());
-        await handle.write(buf);
+        await handle.write(await this._fetchChunkBytes(entry.chunks[i]));
         if (onProgress) onProgress(i + 1, total);
       }
     } finally {
@@ -335,9 +342,26 @@ class DiscordDrive extends EventEmitter {
     return destPath;
   }
 
+  // Reassembles a file entirely in memory (unlike download(), which streams
+  // straight to disk) so the renderer can preview it without a Save-As
+  // round trip. Callers are expected to cap entry.size before calling this
+  // — nothing here bounds memory use.
+  async fetchBytes(fileId, onProgress) {
+    this._ensureReady();
+    const entry = this.getEntry(fileId);
+    if (!entry) throw new Error(`File ${fileId} not in metadata`);
+    const total = entry.chunks.length;
+    const parts = [];
+    for (let i = 0; i < total; i++) {
+      parts.push(await this._fetchChunkBytes(entry.chunks[i]));
+      if (onProgress) onProgress(i + 1, total);
+    }
+    return Buffer.concat(parts);
+  }
+
   async getShareLink(fileId) {
     this._ensureReady();
-    const entry = this.metadata.files.find((f) => f.id === fileId);
+    const entry = this.getEntry(fileId);
     if (!entry || !entry.chunks.length) throw new Error('File not found');
     const msg = await this._request(`/channels/${this.channelId}/messages/${entry.chunks[0]}`);
     const att = msg.attachments && msg.attachments[0];

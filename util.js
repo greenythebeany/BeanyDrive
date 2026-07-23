@@ -81,6 +81,23 @@ for (const [category, exts] of Object.entries(CATEGORY_BY_EXT)) {
   for (const ext of exts) EXT_TO_CATEGORY[ext] = category;
 }
 
+const MIME_TYPES = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp', webp: 'image/webp', svg: 'image/svg+xml',
+  txt: 'text/plain', md: 'text/plain',
+  pdf: 'application/pdf',
+  mp4: 'video/mp4', mov: 'video/quicktime', mkv: 'video/x-matroska', avi: 'video/x-msvideo', webm: 'video/webm',
+  mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav', flac: 'audio/flac', ogg: 'audio/ogg',
+  py: 'text/plain', js: 'text/plain', ts: 'text/plain', java: 'text/plain', c: 'text/plain', cpp: 'text/plain',
+  html: 'text/plain', css: 'text/plain', json: 'text/plain', xml: 'text/plain', yaml: 'text/plain', yml: 'text/plain',
+  sh: 'text/plain', sql: 'text/plain', csv: 'text/plain',
+};
+
+function guessMime(filename) {
+  const dot = filename.lastIndexOf('.');
+  if (dot === -1) return 'application/octet-stream';
+  return MIME_TYPES[filename.slice(dot + 1).toLowerCase()] || 'application/octet-stream';
+}
+
 function categoryFor(filename) {
   const dot = filename.lastIndexOf('.');
   if (dot === -1) return 'other';
@@ -143,5 +160,5 @@ function filesAt(files, currentPath) {
 module.exports = {
   createTokenStore,
   normalizePath, joinPath, parentOf, basenameOf, humanSize,
-  categoryFor, foldersAt, filesAt,
+  categoryFor, foldersAt, filesAt, guessMime,
 };

@@ -1,5 +1,6 @@
 (() => {
   const root = document.getElementById('root');
+  const previewRoot = document.getElementById('preview-root');
   const titlebarLabel = document.getElementById('titlebar-label');
 
   document.getElementById('btn-min').addEventListener('click', () => window.api.minimize());
@@ -66,6 +67,9 @@
     { id: 'purple', name: 'Purple', value: '#b58aff' },
     { id: 'pink', name: 'Pink', value: '#ff8ac2' },
   ];
+  // Categories the in-app preview overlay knows how to render. Everything
+  // else (office docs, archives) still only offers Download.
+  const PREVIEWABLE = new Set(['image', 'pdf', 'text', 'code', 'video', 'audio']);
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
@@ -167,12 +171,15 @@
     toast: null,
     uploads: [],
     dragOver: false,
+    previewOverlay: null,
   };
 
   let rowIds = [];
   let rowMeta = {};
   let toastTimer = null;
   let dragCounter = 0;
+  let pdfjsLibPromise = null; // lazy-loaded, cached — only fetched the first time a PDF is previewed
+  let pdfPreviewToken = 0; // bumped on every openPreview()/close so a stale async render can't stomp a newer one
 
   function accentHex() { return (ACCENTS.find((a) => a.id === state.accent) || ACCENTS[0]).value; }
   function effectiveTheme() { return state.theme === 'system' ? (state.systemDark ? 'dark' : 'light') : state.theme; }
@@ -232,6 +239,12 @@
     state.uploads = state.uploads.filter((u) => u.id !== uploadId);
     showToast(ok ? `Uploaded ${name}` : `Failed: ${name}${error ? ' — ' + error : ''}`);
     render();
+  });
+  window.api.onPreviewProgress(({ fileId, progress }) => {
+    if (state.previewOverlay && state.previewOverlay.fileId === fileId) {
+      state.previewOverlay.progress = progress;
+      render();
+    }
   });
 
   async function init() {
@@ -294,6 +307,186 @@
     apiCall(window.api.copyLink(f.id), (r) => {
       showToast(r.multiChunk ? 'Copied first-chunk link (large file — partial, may expire)' : 'Discord CDN link copied — may expire');
     });
+  }
+
+  // ---- preview overlay ---------------------------------------------------
+  // Rendered into its own persistent DOM node (#preview-root, a sibling of
+  // #root) instead of going through the normal render()/doRender() cycle —
+  // that cycle rebuilds #root's innerHTML on every unrelated state change
+  // (a toast, an upload tick), which would wipe out a <canvas> mid-paint.
+  // renderPreviewOverlay() is only ever called from preview-specific state
+  // transitions, so it never fights with anything already drawn.
+  // Loaded as a classic <script>, not an ES module import() — Chromium
+  // blocks dynamic import() of local files from a file:// document (an
+  // opaque-origin CORS restriction that doesn't apply to classic scripts),
+  // which is how this app is loaded via BrowserWindow.loadFile(). The
+  // vendored bundle is pre-built (esbuild --format=iife) from pdfjs-dist's
+  // ES module build for exactly that reason.
+  function loadPdfjs() {
+    if (!pdfjsLibPromise) {
+      pdfjsLibPromise = new Promise((resolve, reject) => {
+        if (window.pdfjsLib) { resolve(window.pdfjsLib); return; }
+        const script = document.createElement('script');
+        script.src = 'vendor/pdfjs/pdf.bundle.js';
+        script.onload = () => {
+          window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdfjs/pdf.worker.bundle.js';
+          resolve(window.pdfjsLib);
+        };
+        script.onerror = () => reject(new Error('Failed to load pdf.js'));
+        document.head.appendChild(script);
+      });
+    }
+    return pdfjsLibPromise;
+  }
+
+  function previewSelected() {
+    const f = rowMeta[state.selectedId];
+    if (!f || f.isFolder) return;
+    if (!PREVIEWABLE.has(categoryFor(f.name))) return;
+    openPreview(f);
+  }
+
+  function openPreview(f) {
+    pdfPreviewToken += 1;
+    const token = pdfPreviewToken;
+    if (state.previewOverlay && state.previewOverlay.blobUrl) URL.revokeObjectURL(state.previewOverlay.blobUrl);
+    state.previewOverlay = {
+      fileId: f.id, name: f.name, category: categoryFor(f.name),
+      loading: true, progress: 0, error: null, blobUrl: null, textContent: null,
+      pdfDoc: null, pdfPage: 1, pdfPageCount: 0,
+    };
+    renderPreviewOverlay();
+
+    window.api.previewFile(f.id).then(async (res) => {
+      if (token !== pdfPreviewToken) return; // closed or replaced while this was in flight
+      if (!res.ok) {
+        state.previewOverlay.loading = false;
+        state.previewOverlay.error = res.error || 'Preview failed';
+        renderPreviewOverlay();
+        return;
+      }
+      const blob = new Blob([res.bytes], { type: res.mime });
+      const cat = state.previewOverlay.category;
+      if (cat === 'text' || cat === 'code') {
+        state.previewOverlay.textContent = await blob.text();
+        state.previewOverlay.loading = false;
+        renderPreviewOverlay();
+      } else if (cat === 'pdf') {
+        try {
+          const pdfjsLib = await loadPdfjs();
+          const buf = await blob.arrayBuffer();
+          if (token !== pdfPreviewToken) return;
+          const pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+          if (token !== pdfPreviewToken) return;
+          state.previewOverlay.pdfDoc = pdfDoc;
+          state.previewOverlay.pdfPageCount = pdfDoc.numPages;
+          state.previewOverlay.loading = false;
+          renderPreviewOverlay();
+          await drawPdfPage(token);
+        } catch (err) {
+          if (token !== pdfPreviewToken) return;
+          state.previewOverlay.loading = false;
+          state.previewOverlay.error = `Couldn't render PDF: ${err.message}`;
+          renderPreviewOverlay();
+        }
+      } else {
+        state.previewOverlay.blobUrl = URL.createObjectURL(blob);
+        state.previewOverlay.loading = false;
+        renderPreviewOverlay();
+      }
+    }).catch((err) => {
+      if (token !== pdfPreviewToken || !state.previewOverlay) return;
+      state.previewOverlay.loading = false;
+      state.previewOverlay.error = err.message || String(err);
+      renderPreviewOverlay();
+    });
+  }
+
+  async function drawPdfPage(token) {
+    const p = state.previewOverlay;
+    if (!p || !p.pdfDoc || token !== pdfPreviewToken) return;
+    const page = await p.pdfDoc.getPage(p.pdfPage);
+    if (token !== pdfPreviewToken) return;
+    const canvas = document.getElementById('pdf-canvas');
+    if (!canvas) return;
+    const container = canvas.parentElement;
+    const unscaled = page.getViewport({ scale: 1 });
+    const scale = Math.max(0.2, Math.min(
+      (container.clientWidth - 32) / unscaled.width,
+      (container.clientHeight - 32) / unscaled.height,
+    ));
+    const viewport = page.getViewport({ scale });
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+  }
+
+  function changePreviewPage(delta) {
+    const p = state.previewOverlay;
+    if (!p || !p.pdfDoc) return;
+    const next = p.pdfPage + delta;
+    if (next < 1 || next > p.pdfPageCount) return;
+    p.pdfPage = next;
+    renderPreviewOverlay();
+    drawPdfPage(pdfPreviewToken);
+  }
+
+  function closePreviewOverlay() {
+    pdfPreviewToken += 1; // invalidates any in-flight load/render for the closed preview
+    if (state.previewOverlay && state.previewOverlay.blobUrl) URL.revokeObjectURL(state.previewOverlay.blobUrl);
+    state.previewOverlay = null;
+    renderPreviewOverlay();
+  }
+
+  function buildPreviewOverlayHtml(p) {
+    let body;
+    if (p.loading) {
+      body = `<div class="preview-status">Loading preview… ${p.progress}%</div>`;
+    } else if (p.error) {
+      body = `<div class="preview-status error">${esc(p.error)}</div>`;
+    } else if (p.category === 'image') {
+      body = `<img class="preview-media" src="${p.blobUrl}" alt="${esc(p.name)}">`;
+    } else if (p.category === 'video') {
+      body = `<video class="preview-media" src="${p.blobUrl}" controls autoplay></video>`;
+    } else if (p.category === 'audio') {
+      body = `<audio class="preview-audio" src="${p.blobUrl}" controls autoplay></audio>`;
+    } else if (p.category === 'text' || p.category === 'code') {
+      body = `<pre class="preview-text">${esc(p.textContent || '')}</pre>`;
+    } else if (p.category === 'pdf') {
+      body = '<div class="preview-pdf-wrap"><canvas id="pdf-canvas"></canvas></div>';
+    } else {
+      body = '<div class="preview-status">No preview available</div>';
+    }
+    const pager = (p.category === 'pdf' && !p.loading && !p.error && p.pdfPageCount > 1) ? `
+      <div class="preview-pager">
+        <div class="icon-btn" id="preview-prev-page" ${p.pdfPage <= 1 ? 'style="opacity:0.4;pointer-events:none"' : ''}>‹ prev</div>
+        <span class="preview-page-label">page ${p.pdfPage} / ${p.pdfPageCount}</span>
+        <div class="icon-btn" id="preview-next-page" ${p.pdfPage >= p.pdfPageCount ? 'style="opacity:0.4;pointer-events:none"' : ''}>next ›</div>
+      </div>` : '';
+    return `
+      <div class="modal-overlay preview-overlay" id="preview-overlay">
+        <div class="preview-box">
+          <div class="preview-head">
+            <span class="title">${esc(p.name)}</span>
+            ${pager}
+            <span class="esc" id="preview-close">Esc</span>
+          </div>
+          <div class="preview-body">${body}</div>
+        </div>
+      </div>`;
+  }
+
+  function renderPreviewOverlay() {
+    const p = state.previewOverlay;
+    if (!p) { previewRoot.innerHTML = ''; return; }
+    previewRoot.innerHTML = buildPreviewOverlayHtml(p);
+    const overlay = document.getElementById('preview-overlay');
+    overlay.addEventListener('click', (e) => { if (e.target.id === 'preview-overlay') closePreviewOverlay(); });
+    document.getElementById('preview-close').addEventListener('click', closePreviewOverlay);
+    const prevBtn = document.getElementById('preview-prev-page');
+    if (prevBtn) prevBtn.addEventListener('click', () => changePreviewPage(-1));
+    const nextBtn = document.getElementById('preview-next-page');
+    if (nextBtn) nextBtn.addEventListener('click', () => changePreviewPage(1));
   }
 
   function openPrompt(cfg) {
@@ -378,6 +571,13 @@
 
   // ---- keyboard shortcuts -----------------------------------------------
   window.addEventListener('keydown', (e) => {
+    // The preview overlay is modal — it owns the keyboard until closed.
+    if (state.previewOverlay) {
+      if (e.key === 'Escape') { closePreviewOverlay(); return; }
+      if (e.key === 'ArrowLeft') { changePreviewPage(-1); return; }
+      if (e.key === 'ArrowRight') { changePreviewPage(1); return; }
+      return;
+    }
     const tag = (e.target.tagName || '').toLowerCase();
     const inField = tag === 'input' || tag === 'select' || tag === 'textarea';
     if (inField && e.key !== 'Escape') return;
@@ -401,6 +601,7 @@
       case 'u': triggerUpload(); return;
       case 'n': newFolder(); return;
       case 'r': renameSelected(); return;
+      case 'p': previewSelected(); return;
       case ' ': e.preventDefault(); toggleStarSelected(); return;
       case 'd': if (state.nav !== 'trash') trashOrRestoreSelected(); return;
       case 'x': if (state.nav === 'trash') trashOrRestoreSelected(); return;
@@ -529,6 +730,7 @@
     };
     const parentLabel = selFile.path ? `My Drive / ${selFile.path.split('/').join(' / ')}` : 'My Drive';
     const addable = Object.keys(TAGS).filter((t) => !(selFile.tags || []).includes(t));
+    const previewable = PREVIEWABLE.has(cat);
     return `
       <div class="detail-scroll">
         <div class="detail-name">${esc(selFile.name)}</div>
@@ -538,19 +740,20 @@
           <div class="detail-meta-row"><span class="k">path</span><span class="v">${esc(parentLabel)}</span></div>
           <div class="detail-meta-row"><span class="k">chunks</span><span class="v">${selFile.chunks ? selFile.chunks.length : 0}</span></div>
         </div>
-        <div class="detail-preview">${previewTexts[cat] || previewTexts.other}</div>
+        <div class="detail-preview ${previewable ? 'clickable' : ''}" ${previewable ? 'id="detail-preview-trigger" title="Preview (p)"' : ''}>${previewTexts[cat] || previewTexts.other}</div>
         <div class="detail-tags">
           ${(selFile.tags || []).map((t) => TAGS[t] ? `
             <span class="tag-chip" style="border-color:${TAGS[t].color};color:${TAGS[t].color}">${esc(TAGS[t].name)}<span class="tag-remove" data-remove-tag="${esc(t)}">×</span></span>` : '').join('')}
           ${addable.map((t) => `<span class="tag-add-chip" data-add-tag="${esc(t)}">+ ${esc(TAGS[t].name)}</span>`).join('')}
         </div>
         <div class="detail-actions">
+          ${previewable ? '<div class="act-btn primary" id="act-preview">Preview</div>' : ''}
           <div class="act-btn" id="act-download">Download</div>
           <div class="act-btn" id="act-copy-link">Copy Link</div>
           <div class="act-btn" id="act-star">${selFile.starred ? 'Unstar' : 'Star'}</div>
           <div class="act-btn" id="act-trash">${state.nav === 'trash' ? 'Restore' : 'Move to Trash'}</div>
           <div class="act-btn" id="act-rename">Rename</div>
-          <div class="act-btn primary" id="act-upload">Upload</div>
+          <div class="act-btn" id="act-upload">Upload</div>
         </div>
       </div>`;
   }
@@ -811,6 +1014,10 @@
     }
 
     // detail pane actions
+    const actPreview = document.getElementById('act-preview');
+    if (actPreview) actPreview.addEventListener('click', previewSelected);
+    const previewTrigger = document.getElementById('detail-preview-trigger');
+    if (previewTrigger) previewTrigger.addEventListener('click', previewSelected);
     const actDownload = document.getElementById('act-download');
     if (actDownload) actDownload.addEventListener('click', downloadSelected);
     const actCopy = document.getElementById('act-copy-link');

@@ -48,9 +48,13 @@ flip when creating your bot.
 - **Drag and drop** — drop files or whole folders anywhere on the window to
   upload (folder structure is preserved); large uploads that hit Discord's
   size limit automatically retry at a smaller chunk size
+- **In-app preview** — images, PDFs, video, audio, and text/code files open
+  in a full-window preview (`Preview` button, or `p`) without a Save As
+  dialog; the file is reassembled in memory over Discord's REST API and
+  handed straight to the renderer, capped at 50 MB
 - **Keyboard-driven** — `j`/`k` to move, `Enter` to open a folder, `u`
-  upload, `n` new folder, `r` rename, `Space` star, `d` trash, `x` restore,
-  `,` settings
+  upload, `n` new folder, `r` rename, `p` preview, `Space` star, `d` trash,
+  `x` restore, `,` settings
 - **Appearance settings** — dark/light/system theme, 8 accent colors,
   comfortable/compact density, all live-applied with no restart
 - Bot token stored encrypted at rest via Electron's `safeStorage` —
@@ -103,11 +107,13 @@ BeanyDrive-*.AppImage`) and run it directly.
 | `u`       | Upload files                         |
 | `n`       | New folder                           |
 | `r`       | Rename selected file                 |
+| `p`       | Preview selected file                |
 | `Space`   | Star / unstar selected file          |
 | `d`       | Move selected file to Trash          |
 | `x`       | Restore selected file (in Trash)     |
 | `,`       | Settings                             |
-| `Esc`     | Close settings / dialog / clear search |
+| `Esc`     | Close settings / dialog / clear search / close preview |
+| `←` / `→` | Previous / next page (PDF preview open) |
 
 ## Notes
 
@@ -133,3 +139,16 @@ BeanyDrive-*.AppImage`) and run it directly.
 - **Icons**: folder and file-type icons are [Font Awesome Free](https://fontawesome.com)
   (Solid), embedded inline as SVG so there's no runtime font/CDN dependency.
   Icons are licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+- **Preview**: only categories the app knows how to render get a `Preview`
+  button — images, PDF (via a vendored [pdf.js](https://mozilla.github.io/pdf.js/)
+  build, [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)), video,
+  audio, and text/code. Office docs, spreadsheets, and archives still only
+  offer Download. Anything over 50 MB is rejected with a message telling
+  you to download instead — previewing still means pulling every chunk over
+  the network first, same as a download, just held in memory instead of
+  written to disk.
+- **Why `app://` instead of loading `index.html` straight off disk**:
+  Chromium treats plain `file://` pages as an opaque origin, which silently
+  breaks ES module workers — exactly what the PDF preview needs. BeanyDrive
+  registers a proper `app://` scheme (Electron's documented fix for this)
+  and serves the `renderer/` folder through it instead.

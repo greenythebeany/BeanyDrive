@@ -16,11 +16,13 @@ contextBridge.exposeInMainWorld('api', {
   onUploadProgress: (cb) => ipcRenderer.on('drive:uploadProgress', (e, data) => cb(data)),
   onUploadDone: (cb) => ipcRenderer.on('drive:uploadDone', (e, data) => cb(data)),
   onDownloadProgress: (cb) => ipcRenderer.on('drive:downloadProgress', (e, data) => cb(data)),
+  onPreviewProgress: (cb) => ipcRenderer.on('drive:previewProgress', (e, data) => cb(data)),
 
   pickFiles: () => ipcRenderer.invoke('files:pickFiles'),
   upload: (paths, destFolder) => ipcRenderer.invoke('drive:upload', { paths, destFolder }),
   download: (fileId, name) => ipcRenderer.invoke('drive:download', { fileId, name }),
   copyLink: (fileId) => ipcRenderer.invoke('drive:copyLink', { fileId }),
+  previewFile: (fileId) => ipcRenderer.invoke('drive:preview', { fileId }),
 
   trash: (fileId) => ipcRenderer.invoke('drive:trash', { fileId }),
   restore: (fileId) => ipcRenderer.invoke('drive:restore', { fileId }),

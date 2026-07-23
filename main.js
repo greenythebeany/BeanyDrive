@@ -1,8 +1,21 @@
-const { app, BrowserWindow, ipcMain, dialog, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, clipboard, protocol, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { pathToFileURL } = require('url');
 const { DiscordDrive, testConnection } = require('./discord-client');
 const driveConfig = require('./drive-config');
+const { guessMime } = require('./util');
+
+const PREVIEW_MAX_BYTES = 50 * 1024 * 1024;
+
+// Registered as a "standard" scheme (not plain file://) so the renderer has
+// a real, non-opaque origin — file:// pages are treated as an opaque/null
+// origin in Chromium, which silently breaks ES module dynamic import() and
+// module Web Workers (both used by the vendored pdf.js preview renderer).
+// Must run before app 'ready'.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true } },
+]);
 
 let mainWindow = null;
 const drive = new DiscordDrive();
@@ -36,7 +49,7 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  mainWindow.loadURL('app://bundle/index.html');
 
   mainWindow.on('maximize', () => mainWindow.webContents.send('window:state', 'maximized'));
   mainWindow.on('unmaximize', () => mainWindow.webContents.send('window:state', 'normal'));
@@ -54,6 +67,16 @@ async function autoConnect() {
 }
 
 app.whenReady().then(() => {
+  const rendererRoot = path.join(__dirname, 'renderer');
+  protocol.handle('app', (request) => {
+    const url = new URL(request.url);
+    // app://bundle/<path> -> renderer/<path> ; app://bundle/ -> renderer/index.html
+    const relative = decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname);
+    const filePath = path.normalize(path.join(rendererRoot, relative));
+    if (!filePath.startsWith(rendererRoot)) return new Response('Forbidden', { status: 403 });
+    return net.fetch(pathToFileURL(filePath).toString());
+  });
+
   createWindow();
   autoConnect();
 
@@ -173,6 +196,30 @@ ipcMain.handle('drive:copyLink', async (e, { fileId }) => {
   const { url, multiChunk } = await drive.getShareLink(fileId);
   clipboard.writeText(url);
   return { ok: true, multiChunk };
+});
+
+// --- preview ---
+// Reassembles the file in memory (see discord-client's fetchBytes) instead
+// of writing to disk, so the renderer can show it without a Save As dialog.
+ipcMain.handle('drive:preview', async (e, { fileId }) => {
+  try {
+    requireConnected();
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+  const entry = drive.getEntry(fileId);
+  if (!entry) return { ok: false, error: 'File not found' };
+  if (entry.size > PREVIEW_MAX_BYTES) {
+    return { ok: false, error: `Too large to preview (${(entry.size / (1024 * 1024)).toFixed(1)} MB, limit ${PREVIEW_MAX_BYTES / (1024 * 1024)} MB) — download it instead.` };
+  }
+  try {
+    const buf = await drive.fetchBytes(fileId, (cur, total) => {
+      mainWindow.webContents.send('drive:previewProgress', { fileId, progress: Math.round((cur / total) * 100) });
+    });
+    return { ok: true, bytes: new Uint8Array(buf), mime: guessMime(entry.name), name: entry.name };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 // --- mutations ---
