@@ -1,10 +1,11 @@
-const { app, BrowserWindow, ipcMain, dialog, clipboard, protocol, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, clipboard, protocol, net, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
 const { DiscordDrive, testConnection } = require('./discord-client');
 const driveConfig = require('./drive-config');
 const { guessMime } = require('./util');
+const { checkForUpdates } = require('./update-checker');
 
 const PREVIEW_MAX_BYTES = 50 * 1024 * 1024;
 
@@ -89,6 +90,17 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+
+  // Silent background check — only speaks up if something's actually newer.
+  setTimeout(() => {
+    checkForUpdates()
+      .then((result) => {
+        if (result.status === 'available' && mainWindow) {
+          mainWindow.webContents.send('update:available', result);
+        }
+      })
+      .catch(() => {});
+  }, 4000);
 });
 
 app.on('window-all-closed', () => {
@@ -103,6 +115,19 @@ ipcMain.on('window:maximize', () => {
   else mainWindow.maximize();
 });
 ipcMain.on('window:close', () => mainWindow && mainWindow.close());
+
+// --- updates ---
+ipcMain.handle('app:getVersion', () => app.getVersion());
+ipcMain.handle('update:check', async () => {
+  try {
+    return await checkForUpdates();
+  } catch (e) {
+    return { status: 'error', error: e.message };
+  }
+});
+ipcMain.on('shell:openExternal', (e, url) => {
+  if (/^https?:\/\//i.test(url)) shell.openExternal(url);
+});
 
 // --- settings ---
 ipcMain.handle('settings:get', () => driveConfig.publicSettings());

@@ -198,6 +198,8 @@
     dontAskAgainTrash: localStorage.getItem('beanydrive_skip_empty_trash') === '1',
 
     promptModal: null,
+    updatePrompt: null,
+    appVersion: '',
     toast: null,
     uploads: [],
     dragOver: false,
@@ -286,6 +288,7 @@
     applyStatusSnapshot(await window.api.getStatus());
     applyThemeVars();
     render();
+    window.api.getAppVersion().then((v) => { state.appVersion = v; if (state.settingsOpen) render(); });
   }
 
   // ---- actions ----------------------------------------------------------
@@ -635,6 +638,25 @@
     apiCall(window.api.emptyTrash(), () => showToast('Trash emptied'));
   }
   function cancelEmptyTrash() { state.emptyTrashOpen = false; render(); }
+
+  function promptUpdateAvailable(info) {
+    state.updatePrompt = info;
+    render();
+  }
+  function dismissUpdatePrompt() { state.updatePrompt = null; render(); }
+  function downloadUpdate() {
+    const info = state.updatePrompt;
+    state.updatePrompt = null;
+    render();
+    if (info) window.api.openExternal(info.url);
+  }
+  async function manualCheckForUpdates() {
+    showToast('Checking for updates…');
+    const result = await window.api.checkForUpdates();
+    if (result.status === 'available') promptUpdateAvailable(result);
+    else if (result.status === 'error') showToast('Could not check for updates.');
+    else showToast("You're up to date.");
+  }
   function toggleDontAskAgain() {
     state.dontAskAgainTrash = !state.dontAskAgainTrash;
     localStorage.setItem('beanydrive_skip_empty_trash', state.dontAskAgainTrash ? '1' : '0');
@@ -715,6 +737,7 @@
       case 'Escape':
         if (state.emptyTrashOpen) { cancelEmptyTrash(); return; }
         if (state.promptModal) { closePrompt(); return; }
+        if (state.updatePrompt) { dismissUpdatePrompt(); return; }
         if (state.settingsOpen) { toggleSettings(); return; }
         if (state.searchQuery) { state.searchQuery = ''; render(); }
         return;
@@ -930,6 +953,12 @@
         <div class="option-row">
           ${['comfortable', 'compact'].map((d) => `<div class="option-btn ${state.density === d ? 'active' : ''}" data-density-opt="${d}">${d}</div>`).join('')}
         </div>
+
+        <div class="settings-label" style="margin-top:8px;">Updates</div>
+        <div class="settings-row-inline">
+          <div class="test-btn" id="update-check-btn">Check for updates</div>
+          <span style="font-size:11px;color:var(--text-dim);">v${esc(state.appVersion || '')}</span>
+        </div>
       </div>`;
   }
 
@@ -947,6 +976,21 @@
           <div class="modal-actions">
             <div class="act-btn" id="empty-trash-cancel">Cancel</div>
             <div class="act-btn danger" id="empty-trash-confirm">Empty Trash</div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function buildUpdateModal() {
+    if (!state.updatePrompt) return '';
+    return `
+      <div class="modal-overlay" id="update-overlay">
+        <div class="modal-box">
+          <div class="modal-title">Update available</div>
+          <div class="modal-message">BeanyDrive v${esc(state.updatePrompt.version)} is available. Download it now?</div>
+          <div class="modal-actions">
+            <div class="act-btn" id="update-cancel">Later</div>
+            <div class="act-btn primary" id="update-confirm">Download</div>
           </div>
         </div>
       </div>`;
@@ -1082,6 +1126,7 @@
       ${buildSettingsPanel()}
       ${buildEmptyTrashModal(view.trashCount)}
       ${buildPromptModal()}
+      ${buildUpdateModal()}
     `;
 
     titlebarLabel.textContent = 'BeanyDrive';
@@ -1217,6 +1262,8 @@
     if (testBtn) testBtn.addEventListener('click', testConnectionAction);
     const saveBtn = document.getElementById('settings-save-btn');
     if (saveBtn) saveBtn.addEventListener('click', saveSettingsForm);
+    const updateCheckBtn = document.getElementById('update-check-btn');
+    if (updateCheckBtn) updateCheckBtn.addEventListener('click', manualCheckForUpdates);
     root.querySelectorAll('[data-theme-opt]').forEach((el) => el.addEventListener('click', () => setTheme(el.dataset.themeOpt)));
     root.querySelectorAll('[data-accent]').forEach((el) => el.addEventListener('click', () => setAccent(el.dataset.accent)));
     root.querySelectorAll('[data-density-opt]').forEach((el) => el.addEventListener('click', () => setDensity(el.dataset.densityOpt)));
@@ -1228,6 +1275,13 @@
     if (etCancel) etCancel.addEventListener('click', cancelEmptyTrash);
     const etConfirm = document.getElementById('empty-trash-confirm');
     if (etConfirm) etConfirm.addEventListener('click', confirmEmptyTrash);
+
+    const updOverlay = document.getElementById('update-overlay');
+    if (updOverlay) updOverlay.addEventListener('click', (e) => { if (e.target.id === 'update-overlay') dismissUpdatePrompt(); });
+    const updCancel = document.getElementById('update-cancel');
+    if (updCancel) updCancel.addEventListener('click', dismissUpdatePrompt);
+    const updConfirm = document.getElementById('update-confirm');
+    if (updConfirm) updConfirm.addEventListener('click', downloadUpdate);
     const dontAsk = document.getElementById('dontask-toggle');
     if (dontAsk) dontAsk.addEventListener('click', toggleDontAskAgain);
 
@@ -1249,6 +1303,8 @@
     if (paths.length) startUpload(paths);
     e.target.value = '';
   });
+
+  window.api.onUpdateAvailable(promptUpdateAvailable);
 
   init();
 })();

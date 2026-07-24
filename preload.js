@@ -6,6 +6,11 @@ contextBridge.exposeInMainWorld('api', {
   close: () => ipcRenderer.send('window:close'),
   onWindowState: (cb) => ipcRenderer.on('window:state', (e, state) => cb(state)),
 
+  getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  onUpdateAvailable: (cb) => ipcRenderer.on('update:available', (e, info) => cb(info)),
+  openExternal: (url) => ipcRenderer.send('shell:openExternal', url),
+
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (payload) => ipcRenderer.invoke('settings:save', payload),
   testConnection: (payload) => ipcRenderer.invoke('settings:testConnection', payload),
