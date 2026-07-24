@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="icon.png" width="140" alt="BeanyDrive icon">
+  <img src="thumbnail.png" width="140" alt="BeanyDrive icon">
 </p>
 
 <h1 align="center">BeanyDrive</h1>

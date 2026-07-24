@@ -41,6 +41,7 @@ function createWindow() {
     minWidth: 920,
     minHeight: 580,
     frame: false,
+    show: false,
     backgroundColor: '#0b0b0c',
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
@@ -50,6 +51,11 @@ function createWindow() {
     },
   });
   mainWindow.loadURL('app://bundle/index.html');
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.maximize();
+    mainWindow.show();
+  });
 
   mainWindow.on('maximize', () => mainWindow.webContents.send('window:state', 'maximized'));
   mainWindow.on('unmaximize', () => mainWindow.webContents.send('window:state', 'normal'));
