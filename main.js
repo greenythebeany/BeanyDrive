@@ -7,7 +7,7 @@ const driveConfig = require('./drive-config');
 const { guessMime } = require('./util');
 const { checkForUpdates } = require('./update-checker');
 
-const PREVIEW_MAX_BYTES = 50 * 1024 * 1024;
+const PREVIEW_MAX_BYTES = 500 * 1024 * 1024;
 
 // Registered as a "standard" scheme (not plain file://) so the renderer has
 // a real, non-opaque origin — file:// pages are treated as an opaque/null
