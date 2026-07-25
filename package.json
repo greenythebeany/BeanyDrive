@@ -27,7 +27,8 @@
       "drive-config.js",
       "util.js",
       "icon.png",
-      "renderer/**/*"
+      "renderer/**/*",
+      "update-checker.js"
     ],
     "icon": "icon.png",
     "win": {
