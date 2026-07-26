@@ -192,6 +192,7 @@
     botTokenInput: '',
     channelIdInput: '',
     chunkSizeInput: 10,
+    concurrencyInput: 4,
     testResult: null,
 
     emptyTrashOpen: false,
@@ -269,9 +270,11 @@
     u.progress = progress;
     render();
   });
-  window.api.onUploadDone(({ name, ok, error, uploadId }) => {
+  window.api.onUploadDone(({ name, ok, error, canceled, uploadId }) => {
     state.uploads = state.uploads.filter((u) => u.id !== uploadId);
-    showToast(ok ? `Uploaded ${name}` : `Failed: ${name}${error ? ' — ' + error : ''}`);
+    if (ok) showToast(`Uploaded ${name}`);
+    else if (canceled) showToast(`Canceled ${name}`);
+    else showToast(`Failed: ${name}${error ? ' — ' + error : ''}`);
     render();
   });
   window.api.onPreviewProgress(({ fileId, progress }) => {
@@ -285,6 +288,7 @@
     state.settings = await window.api.getSettings();
     state.channelIdInput = state.settings.channelId;
     state.chunkSizeInput = state.settings.chunkSizeMb;
+    state.concurrencyInput = state.settings.uploadConcurrency || 4;
     applyStatusSnapshot(await window.api.getStatus());
     applyThemeVars();
     render();
@@ -308,6 +312,19 @@
     });
   }
 
+  // The row sticks around showing "canceling" until main reports back — the
+  // in-flight chunk POST has to unwind and its partial chunks be cleaned up
+  // before the upload is really gone.
+  function cancelUpload(uploadId) {
+    const u = state.uploads.find((x) => x.id === uploadId);
+    if (!u || u.canceling) return;
+    u.canceling = true;
+    render();
+    apiCall(window.api.cancelUpload(uploadId), (res) => {
+      if (res && !res.ok) { u.canceling = false; render(); }
+    });
+  }
+
   function selectNav(id) { state.nav = id; state.searchQuery = ''; state.selectedId = null; render(); }
   function selectFile(id) { state.selectedId = id; render(); }
   function toggleSettings() {
@@ -316,6 +333,7 @@
       state.botTokenInput = '';
       state.channelIdInput = state.settings.channelId;
       state.chunkSizeInput = state.settings.chunkSizeMb;
+      state.concurrencyInput = state.settings.uploadConcurrency || 4;
       state.testResult = null;
     }
     render();
@@ -673,11 +691,18 @@
     render();
   }
 
+  function stepConcurrency(delta) {
+    const current = Number(state.concurrencyInput) || 0;
+    state.concurrencyInput = Math.max(1, Math.min(8, current + delta));
+    render();
+  }
+
   function saveSettingsForm() {
     const token = state.botTokenInput.trim() || undefined;
     const channelId = state.channelIdInput.trim();
     const chunkSizeMb = Number(state.chunkSizeInput) || 10;
-    window.api.saveSettings({ token, channelId, chunkSizeMb }).then((res) => {
+    const uploadConcurrency = Number(state.concurrencyInput) || 4;
+    window.api.saveSettings({ token, channelId, chunkSizeMb, uploadConcurrency }).then((res) => {
       state.settings = res.settings;
       state.botTokenInput = '';
       showToast(res.ok ? 'Settings saved' : `Connect failed: ${res.error}`);
@@ -935,6 +960,16 @@
           </div>
         </div>
 
+        <div class="settings-section-gap">
+          <div class="settings-label">Parallel chunk uploads</div>
+          <div class="stepper-row">
+            <div class="icon-btn stepper-btn" id="conc-decrement">−</div>
+            <input class="settings-input stepper-input" id="conc-input" type="number" min="1" max="8" value="${esc(String(state.concurrencyInput))}">
+            <div class="icon-btn stepper-btn" id="conc-increment">+</div>
+          </div>
+          <div class="settings-hint">Higher is faster for big files; drop to 1 on a flaky connection.</div>
+        </div>
+
         <div class="settings-row-inline">
           <div class="act-btn primary" id="settings-save-btn">Save &amp; connect</div>
         </div>
@@ -1088,8 +1123,11 @@
             ${state.uploads.map((u) => `
               <div class="upload-row">
                 <span class="upload-name">${esc(u.name)}</span>
-                <div class="upload-bar-track"><div class="upload-bar-fill" style="width:${u.progress}%"></div></div>
-                <span class="upload-pct">${u.progress}%</span>
+                <div class="upload-bar-track"><div class="upload-bar-fill${u.canceling ? ' canceling' : ''}" style="width:${u.progress}%"></div></div>
+                <span class="upload-pct">${u.canceling ? 'canceling' : `${u.progress}%`}</span>
+                ${u.canceling
+                  ? '<div class="upload-cancel disabled">✕</div>'
+                  : `<div class="upload-cancel" data-cancel-upload="${esc(u.id)}" title="cancel upload">✕</div>`}
               </div>`).join('')}
             ${state.connection.status !== 'connected' ? `
               <div class="center-msg">${esc(conn.label === 'not connected' ? 'Not connected — open Settings (,) to add your bot token and channel ID.' : conn.label)}</div>`
@@ -1163,6 +1201,13 @@
       el.addEventListener('dblclick', () => {
         const r = rowMeta[el.dataset.row] || rowMeta[Number(el.dataset.row)];
         if (r && r.isFolder) selectNav(r.targetNav);
+      });
+    });
+
+    root.querySelectorAll('[data-cancel-upload]').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        cancelUpload(el.dataset.cancelUpload);
       });
     });
 
@@ -1260,6 +1305,12 @@
     if (chunkDec) chunkDec.addEventListener('click', () => stepChunkSize(-1));
     const chunkInc = document.getElementById('chunk-increment');
     if (chunkInc) chunkInc.addEventListener('click', () => stepChunkSize(1));
+    const concInput = document.getElementById('conc-input');
+    if (concInput) concInput.addEventListener('input', (e) => { state.concurrencyInput = e.target.value; });
+    const concDec = document.getElementById('conc-decrement');
+    if (concDec) concDec.addEventListener('click', () => stepConcurrency(-1));
+    const concInc = document.getElementById('conc-increment');
+    if (concInc) concInc.addEventListener('click', () => stepConcurrency(1));
     const testBtn = document.getElementById('test-connection-btn');
     if (testBtn) testBtn.addEventListener('click', testConnectionAction);
     const saveBtn = document.getElementById('settings-save-btn');

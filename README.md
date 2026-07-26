@@ -116,10 +116,14 @@ without a Save As dialog:
 - **Drag and drop** — drop files or whole folders anywhere on the window to
   upload (folder structure is preserved); large uploads that hit Discord's
   size limit automatically retry at a smaller chunk size
+- **Uploads built for big files** — chunks upload several at a time
+  (configurable, default 4), every upload can be canceled from its progress
+  row, and an upload interrupted by a network error resumes from the last
+  chunk that made it instead of starting over
 - **In-app preview** — images, PDFs, video, audio, and text/code files open
   in a full-window preview (`Preview` button, or `p`) without a Save As
   dialog; the file is reassembled in memory over Discord's REST API and
-  handed straight to the renderer, capped at 50 MB
+  handed straight to the renderer, capped at 500 MB
 - **Keyboard-driven** — `j`/`k` to move, `Enter` to open a folder, `u`
   upload, `n` new folder, `r` rename, `p` preview, `Space` star, `d` trash,
   `x` restore, `,` settings
@@ -206,6 +210,18 @@ BeanyDrive-*.AppImage`) and run it directly.
   upload limit (based on its boost tier), the same auto-detection the
   original bot did. If Discord ever rejects a chunk as too large mid-upload,
   BeanyDrive halves the chunk size and retries automatically.
+- **Parallel uploads**: how many chunks are sent at once is configurable in
+  Settings (default 4, max 8). Discord's per-channel rate limit is the real
+  ceiling, so past a handful there's nothing to gain; set it to 1 if your
+  connection can't keep several 10 MB POSTs alive at once.
+- **Resuming**: when an upload dies partway (network drop, closed app), the
+  chunks that made it are deliberately left in the channel and recorded in
+  `uploads-resume.json` beside the config. Re-uploading the same file to the
+  same folder picks up from there. Editing the file invalidates the record —
+  resuming onto changed bytes would produce a corrupt file — and records
+  nobody resumes within a week are swept on connect, their chunks deleted.
+  **Canceling** an upload deletes its chunks immediately; that's the
+  difference between canceling and failing.
 - **Folders**: virtual, same as the original — they exist as path prefixes
   on files plus an explicit folder list for empty directories.
 - **Trash vs. permanent delete**: moving a file to Trash only flips a flag

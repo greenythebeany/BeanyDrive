@@ -28,7 +28,8 @@
       "util.js",
       "icon.png",
       "renderer/**/*",
-      "update-checker.js"
+      "update-checker.js",
+      "upload-resume.js"
     ],
     "icon": "icon.png",
     "win": {

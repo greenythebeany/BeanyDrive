@@ -2,10 +2,11 @@ const { app, BrowserWindow, ipcMain, dialog, clipboard, protocol, net, shell } =
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
-const { DiscordDrive, testConnection } = require('./discord-client');
+const { DiscordDrive, testConnection, isCancelError } = require('./discord-client');
 const driveConfig = require('./drive-config');
 const { guessMime } = require('./util');
 const { checkForUpdates } = require('./update-checker');
+const { createResumeStore } = require('./upload-resume');
 
 const PREVIEW_MAX_BYTES = 500 * 1024 * 1024;
 
@@ -29,6 +30,7 @@ drive.on('status', (msg) => pushStatus(msg));
 drive.on('error', (err) => pushStatus(`Error: ${err.message}`));
 drive.on('ready', () => {
   if (mainWindow) mainWindow.webContents.send('drive:update', drive.snapshot());
+  sweepAbandonedUploads();
 });
 
 function pushUpdate() {
@@ -67,10 +69,18 @@ async function autoConnect() {
   const token = driveConfig.getToken();
   if (!token || !settings.channelId) return;
   try {
-    await drive.connect(token, settings.channelId, settings.chunkSizeMb);
+    await drive.connect(token, settings.channelId, settings.chunkSizeMb, settings.uploadConcurrency);
   } catch (e) {
     // status/error already broadcast via the drive's own events
   }
+}
+
+// Chunks from uploads nobody ever resumed are the only way messages can go
+// unreferenced; clearing them needs a connection, so it runs once we have one.
+function sweepAbandonedUploads() {
+  drive.sweepStaleResumes()
+    .then((count) => { if (count) pushStatus(`Cleaned up ${count} chunk(s) from abandoned uploads`); })
+    .catch(() => {});
 }
 
 app.whenReady().then(() => {
@@ -83,6 +93,8 @@ app.whenReady().then(() => {
     if (!filePath.startsWith(rendererRoot)) return new Response('Forbidden', { status: 403 });
     return net.fetch(pathToFileURL(filePath).toString());
   });
+
+  drive.resumeStore = createResumeStore(path.join(app.getPath('userData'), 'uploads-resume.json'));
 
   createWindow();
   autoConnect();
@@ -132,12 +144,12 @@ ipcMain.on('shell:openExternal', (e, url) => {
 // --- settings ---
 ipcMain.handle('settings:get', () => driveConfig.publicSettings());
 
-ipcMain.handle('settings:save', async (e, { token, channelId, chunkSizeMb }) => {
-  const saved = driveConfig.saveSettings({ token, channelId, chunkSizeMb });
+ipcMain.handle('settings:save', async (e, { token, channelId, chunkSizeMb, uploadConcurrency }) => {
+  const saved = driveConfig.saveSettings({ token, channelId, chunkSizeMb, uploadConcurrency });
   const effectiveToken = token || driveConfig.getToken();
   if (effectiveToken && channelId) {
     try {
-      await drive.connect(effectiveToken, channelId, chunkSizeMb || saved.chunkSizeMb);
+      await drive.connect(effectiveToken, channelId, chunkSizeMb || saved.chunkSizeMb, saved.uploadConcurrency);
     } catch (e2) {
       return { ok: false, error: e2.message, settings: saved };
     }
@@ -172,25 +184,53 @@ ipcMain.handle('files:pickFiles', async () => {
 });
 
 let uploadSeq = 0;
+// Live uploads, keyed by the id the renderer sees on its progress rows, so a
+// cancel click can reach the job whether it's mid-transfer or still queued.
+const activeUploads = new Map();
+
 async function runUpload(paths, destFolder) {
-  for (const p of paths) {
-    const uploadId = `u${Date.now()}_${uploadSeq++}`;
-    const name = path.basename(p);
-    mainWindow.webContents.send('drive:uploadProgress', { uploadId, name, progress: 0 });
+  const jobs = paths.map((p) => ({
+    uploadId: `u${Date.now()}_${uploadSeq++}`,
+    localPath: p,
+    name: path.basename(p),
+    canceled: false,
+    controller: new AbortController(),
+  }));
+
+  // Emit every row up front (not just the one being transferred) so queued
+  // files are cancelable too, instead of only the head of the batch.
+  for (const job of jobs) {
+    activeUploads.set(job.uploadId, job);
+    mainWindow.webContents.send('drive:uploadProgress', { uploadId: job.uploadId, name: job.name, progress: 0 });
+  }
+
+  for (const job of jobs) {
+    const { uploadId, name } = job;
+    if (job.canceled) {
+      activeUploads.delete(uploadId);
+      mainWindow.webContents.send('drive:uploadDone', { uploadId, name, ok: false, canceled: true });
+      continue;
+    }
+    const control = { signal: job.controller.signal, isCanceled: () => job.canceled };
+    const onProgress = (cur, total) => {
+      mainWindow.webContents.send('drive:uploadProgress', { uploadId, name, progress: Math.round((cur / total) * 100) });
+    };
     try {
-      const stat = fs.statSync(p);
+      const stat = fs.statSync(job.localPath);
       if (stat.isDirectory()) {
-        await drive.uploadFolder(p, destFolder, (cur, total) => {
-          mainWindow.webContents.send('drive:uploadProgress', { uploadId, name, progress: Math.round((cur / total) * 100) });
-        });
+        await drive.uploadFolder(job.localPath, destFolder, onProgress, control);
       } else {
-        await drive.upload(p, destFolder, (cur, total) => {
-          mainWindow.webContents.send('drive:uploadProgress', { uploadId, name, progress: Math.round((cur / total) * 100) });
-        });
+        await drive.upload(job.localPath, destFolder, onProgress, control);
       }
       mainWindow.webContents.send('drive:uploadDone', { uploadId, name, ok: true });
     } catch (err) {
-      mainWindow.webContents.send('drive:uploadDone', { uploadId, name, ok: false, error: err.message });
+      if (isCancelError(err)) {
+        mainWindow.webContents.send('drive:uploadDone', { uploadId, name, ok: false, canceled: true });
+      } else {
+        mainWindow.webContents.send('drive:uploadDone', { uploadId, name, ok: false, error: err.message });
+      }
+    } finally {
+      activeUploads.delete(uploadId);
     }
     pushUpdate();
   }
@@ -203,6 +243,14 @@ ipcMain.handle('drive:upload', async (e, { paths, destFolder }) => {
     return { ok: false, error: err.message };
   }
   runUpload(paths, destFolder);
+  return { ok: true };
+});
+
+ipcMain.handle('drive:cancelUpload', (e, { uploadId }) => {
+  const job = activeUploads.get(uploadId);
+  if (!job) return { ok: false, error: 'Upload already finished' };
+  job.canceled = true;
+  job.controller.abort(); // kills the chunk POST currently in flight
   return { ok: true };
 });
 

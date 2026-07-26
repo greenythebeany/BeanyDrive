@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('api', {
 
   pickFiles: () => ipcRenderer.invoke('files:pickFiles'),
   upload: (paths, destFolder) => ipcRenderer.invoke('drive:upload', { paths, destFolder }),
+  cancelUpload: (uploadId) => ipcRenderer.invoke('drive:cancelUpload', { uploadId }),
   download: (fileId, name) => ipcRenderer.invoke('drive:download', { fileId, name }),
   copyLink: (fileId) => ipcRenderer.invoke('drive:copyLink', { fileId }),
   previewFile: (fileId) => ipcRenderer.invoke('drive:preview', { fileId }),

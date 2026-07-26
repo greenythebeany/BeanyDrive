@@ -14,13 +14,37 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { normalizePath, joinPath } = require('./util');
 
+const { resumeKey } = require('./upload-resume');
+
 const API_BASE = 'https://discord.com/api/v10';
 const SAFETY_BYTES = 256 * 1024;
+const DEFAULT_CONCURRENCY = 4;
+// Unfinished uploads older than this are given up on: their chunks are deleted
+// and the resume record dropped, so abandoned attempts can't accumulate in the
+// channel forever.
+const RESUME_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const METADATA_FILENAME = 'beanydrive_metadata.json';
 const METADATA_MARKER = '[BeanyDrive metadata - do not delete]';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Thrown when the user cancels an upload. Carries a flag rather than relying
+// on the message so main.js can tell a cancel apart from a real failure and
+// report it as such instead of surfacing it as an error.
+class UploadCanceled extends Error {
+  constructor() {
+    super('Upload canceled');
+    this.name = 'UploadCanceled';
+    this.canceled = true;
+  }
+}
+
+// An in-flight chunk POST aborted via AbortController surfaces as a DOMException
+// named 'AbortError' rather than our own error type.
+function isCancelError(err) {
+  return !!err && (err.canceled === true || err.name === 'AbortError');
 }
 
 function tierLimitBytes(premiumTier) {
@@ -67,20 +91,21 @@ async function testConnection(token, channelId) {
   return { channelName: channel.name, guildName: guild.name };
 }
 
-async function* iterChunks(filePath, chunkSize) {
-  const handle = await fsp.open(filePath, 'r');
-  try {
-    let idx = 0;
-    const buffer = Buffer.alloc(chunkSize);
-    for (;;) {
-      const { bytesRead } = await handle.read(buffer, 0, chunkSize, null);
-      if (bytesRead === 0) return;
-      yield [idx, Buffer.from(buffer.subarray(0, bytesRead))];
-      idx += 1;
-    }
-  } finally {
-    await handle.close();
-  }
+// Chunks are read by absolute offset rather than streamed, so several can be
+// in flight at once and a resumed upload can skip straight to the parts that
+// are still missing.
+async function readChunk(handle, idx, chunkSize, size) {
+  const start = idx * chunkSize;
+  const length = Math.min(chunkSize, size - start);
+  const buffer = Buffer.alloc(length);
+  await handle.read(buffer, 0, length, start);
+  return buffer;
+}
+
+function chunkArrayToMap(chunkIds) {
+  const map = {};
+  chunkIds.forEach((msgId, idx) => { if (msgId) map[idx] = msgId; });
+  return map;
 }
 
 // Serializes metadata read-modify-write cycles so concurrent IPC calls
@@ -123,6 +148,9 @@ class DiscordDrive extends EventEmitter {
     this.guildName = null;
     this.chunkSizeMb = 10;
     this.chunkSize = null;
+    this.uploadConcurrency = DEFAULT_CONCURRENCY;
+    // Set by main.js; when absent, uploads simply aren't resumable.
+    this.resumeStore = null;
     this.metadata = { version: 3, files: [], folders: [] };
     this.metadataMessageId = null;
     this.status = 'disconnected';
@@ -140,10 +168,11 @@ class DiscordDrive extends EventEmitter {
     if (this.status !== 'connected') throw new Error('Not connected yet');
   }
 
-  async connect(token, channelId, chunkSizeMb) {
+  async connect(token, channelId, chunkSizeMb, uploadConcurrency) {
     this.token = token;
     this.channelId = String(channelId);
     this.chunkSizeMb = chunkSizeMb || 10;
+    this.uploadConcurrency = Math.max(1, Math.min(8, uploadConcurrency || DEFAULT_CONCURRENCY));
     this.status = 'connecting';
     this.emit('status', 'Connecting...');
     try {
@@ -213,7 +242,7 @@ class DiscordDrive extends EventEmitter {
 
   // ---- upload / download ------------------------------------------
 
-  async _sendChunk(fileId, idx, total, name, buffer, isEmpty) {
+  async _sendChunk(fileId, idx, total, name, buffer, isEmpty, signal) {
     const form = new FormData();
     const label = isEmpty
       ? `\`${fileId}\` chunk 1/1 (empty) - ${name}`
@@ -221,49 +250,74 @@ class DiscordDrive extends EventEmitter {
     form.set('payload_json', JSON.stringify({ content: label }));
     const filename = `${name}.part${String(idx).padStart(4, '0')}`;
     form.set('files[0]', new Blob([buffer]), filename);
-    const msg = await this._request(`/channels/${this.channelId}/messages`, { method: 'POST', body: form });
+    const msg = await this._request(`/channels/${this.channelId}/messages`, { method: 'POST', body: form, signal });
     return msg.id;
   }
 
-  async upload(localPath, destFolder, onProgress) {
+  // Best-effort cleanup of chunk messages that are no longer referenced by
+  // metadata — used when an upload is retried at a smaller chunk size, and
+  // when one is canceled partway through.
+  async _deleteMessages(msgIds) {
+    for (const msgId of msgIds) {
+      await this._request(`/channels/${this.channelId}/messages/${msgId}`, { method: 'DELETE' }).catch(() => {});
+    }
+  }
+
+  // Drops the chunks of an upload that will never be completed, along with its
+  // resume record. Cancel only — a *failed* upload deliberately keeps both so
+  // the next attempt can resume.
+  async _abandonUpload(key, msgIds) {
+    await this._deleteMessages(msgIds);
+    if (key && this.resumeStore) this.resumeStore.delete(key);
+  }
+
+  // `control` is an optional { signal, isCanceled } pair: the AbortSignal kills
+  // the chunk POSTs currently in flight, and isCanceled() is checked before each
+  // chunk. On cancel the partial chunks are deleted so nothing is orphaned; on
+  // failure they're kept and recorded, so retrying resumes instead of restarting.
+  async upload(localPath, destFolder, onProgress, control = {}) {
     this._ensureReady();
-    const fileId = crypto.randomUUID().replace(/-/g, '');
+    const checkCanceled = () => {
+      if (control.isCanceled && control.isCanceled()) throw new UploadCanceled();
+    };
+    checkCanceled();
     const name = path.basename(localPath);
-    const size = (await fsp.stat(localPath)).size;
+    const stat = await fsp.stat(localPath);
+    const size = stat.size;
     const dest = normalizePath(destFolder);
-    let chunkIds = [];
+
+    const key = this.resumeStore
+      ? resumeKey({ localPath, size, mtimeMs: stat.mtimeMs, dest, channelId: this.channelId })
+      : null;
+    let saved = key ? this.resumeStore.get(key) : null;
+    if (saved && saved.chunkSize !== this.chunkSize) {
+      // Chunk size changed since the interrupted run (a settings edit, or a 413
+      // downgrade), so the recorded parts no longer line up with the offsets
+      // we'd read now. Start clean rather than assemble a corrupt file.
+      await this._abandonUpload(key, Object.values(saved.chunks || {}));
+      saved = null;
+    }
+
+    const fileId = (saved && saved.fileId) || crypto.randomUUID().replace(/-/g, '');
+    let chunkIds;
 
     if (size === 0) {
-      const msgId = await this._sendChunk(fileId, 0, 1, name, Buffer.alloc(0), true);
-      chunkIds.push(msgId);
+      const msgId = await this._sendChunk(fileId, 0, 1, name, Buffer.alloc(0), true, control.signal);
+      chunkIds = [msgId];
       if (onProgress) onProgress(1, 1);
     } else {
-      let total = Math.ceil(size / this.chunkSize);
-      let attempt = 0;
-      for (;;) {
-        try {
-          chunkIds = [];
-          for await (const [idx, data] of iterChunks(localPath, this.chunkSize)) {
-            const msgId = await this._sendChunk(fileId, idx, total, name, data, false);
-            chunkIds.push(msgId);
-            if (onProgress) onProgress(idx + 1, total);
-          }
-          break;
-        } catch (err) {
-          if (err.status === 413 && this.chunkSize > 1024 * 1024) {
-            this.chunkSize = Math.floor(this.chunkSize / 2);
-            this.emit('status', `Limit hit, retrying at ${(this.chunkSize / (1024 * 1024)).toFixed(1)} MB chunks...`);
-            for (const mid of chunkIds) {
-              await this._request(`/channels/${this.channelId}/messages/${mid}`, { method: 'DELETE' }).catch(() => {});
-            }
-            total = Math.ceil(size / this.chunkSize);
-            attempt += 1;
-            if (attempt > 6) throw err;
-            continue;
-          }
-          throw err;
-        }
-      }
+      chunkIds = await this._uploadChunks({
+        localPath, size, fileId, name, dest, key, saved, onProgress, control, checkCanceled,
+      });
+    }
+
+    // A cancel that lands between the last chunk and the metadata save still
+    // counts — without this the file would silently complete anyway.
+    try {
+      checkCanceled();
+    } catch (err) {
+      await this._abandonUpload(key, chunkIds.filter(Boolean));
+      throw err;
     }
 
     return this._withLock(async () => {
@@ -273,11 +327,115 @@ class DiscordDrive extends EventEmitter {
       };
       this.metadata.files.push(entry);
       await this.saveMetadata();
+      // The chunks belong to metadata now — they're no longer loose parts.
+      if (key && this.resumeStore) this.resumeStore.delete(key);
       return entry;
     });
   }
 
-  async uploadFolder(localFolder, destFolder, onProgress) {
+  // Runs up to `uploadConcurrency` chunk POSTs at a time, filling a
+  // position-indexed array so the chunk order survives out-of-order completion.
+  // Retries the whole file at half the chunk size on 413, as before.
+  async _uploadChunks({ localPath, size, fileId, name, dest, key, saved, onProgress, control, checkCanceled }) {
+    let carried = (saved && saved.chunks) || {};
+    let attempt = 0;
+
+    for (;;) {
+      const total = Math.ceil(size / this.chunkSize);
+      const chunkIds = new Array(total).fill(null);
+      let completed = 0;
+
+      for (const [idxStr, msgId] of Object.entries(carried)) {
+        const idx = Number(idxStr);
+        if (msgId && idx >= 0 && idx < total) { chunkIds[idx] = msgId; completed += 1; }
+      }
+      if (completed) {
+        this.emit('status', `Resuming ${name} - ${completed}/${total} chunk(s) already uploaded`);
+      }
+      if (onProgress) onProgress(completed, total);
+
+      const handle = await fsp.open(localPath, 'r');
+      let nextIdx = 0;
+      let failure = null;
+
+      const recordChunk = (idx, msgId) => {
+        chunkIds[idx] = msgId;
+        completed += 1;
+        if (key && this.resumeStore) {
+          this.resumeStore.put(key, {
+            fileId, name, size, dest, localPath,
+            chunkSize: this.chunkSize,
+            channelId: this.channelId,
+            chunks: chunkArrayToMap(chunkIds),
+          });
+        }
+        if (onProgress) onProgress(completed, total);
+      };
+
+      const worker = async () => {
+        for (;;) {
+          if (failure) return;
+          const idx = nextIdx++;
+          if (idx >= total) return;
+          if (chunkIds[idx]) continue; // already uploaded by an earlier attempt
+          try {
+            checkCanceled();
+            const data = await readChunk(handle, idx, this.chunkSize, size);
+            recordChunk(idx, await this._sendChunk(fileId, idx, total, name, data, false, control.signal));
+          } catch (err) {
+            if (!failure) failure = err;
+            return;
+          }
+        }
+      };
+
+      try {
+        const workers = Math.max(1, Math.min(this.uploadConcurrency, total));
+        await Promise.all(Array.from({ length: workers }, () => worker()));
+      } finally {
+        await handle.close();
+      }
+
+      if (!failure) return chunkIds;
+
+      const uploaded = chunkIds.filter(Boolean);
+      if (isCancelError(failure)) {
+        await this._abandonUpload(key, uploaded);
+        throw new UploadCanceled();
+      }
+      if (failure.status === 413 && this.chunkSize > 1024 * 1024) {
+        this.chunkSize = Math.floor(this.chunkSize / 2);
+        this.emit('status', `Limit hit, retrying at ${(this.chunkSize / (1024 * 1024)).toFixed(1)} MB chunks...`);
+        await this._abandonUpload(key, uploaded);
+        carried = {};
+        attempt += 1;
+        if (attempt > 6) throw failure;
+        continue;
+      }
+      // Everything else keeps its chunks and its resume record on purpose: the
+      // next attempt at this file re-sends only what's missing.
+      throw failure;
+    }
+  }
+
+  // Uploads abandoned long enough ago that nobody is going to resume them are
+  // the one way chunk messages can pile up unreferenced — clear them out.
+  async sweepStaleResumes(maxAgeMs = RESUME_MAX_AGE_MS) {
+    if (!this.resumeStore) return 0;
+    let removed = 0;
+    for (const { key, entry } of this.resumeStore.stale(maxAgeMs)) {
+      if (entry.channelId && entry.channelId !== this.channelId) continue;
+      const ids = Object.values(entry.chunks || {}).filter(Boolean);
+      await this._deleteMessages(ids);
+      this.resumeStore.delete(key);
+      removed += ids.length;
+    }
+    return removed;
+  }
+
+  // Canceling mid-folder keeps the files already uploaded (they're in metadata
+  // and would have to be trashed individually anyway) and stops before the next.
+  async uploadFolder(localFolder, destFolder, onProgress, control = {}) {
     this._ensureReady();
     const folderName = path.basename(localFolder);
     const targetRoot = joinPath(destFolder, folderName);
@@ -291,10 +449,11 @@ class DiscordDrive extends EventEmitter {
 
     const results = [];
     for (let i = 0; i < items.length; i++) {
+      if (control.isCanceled && control.isCanceled()) throw new UploadCanceled();
       const item = items[i];
       const dest = joinPath(targetRoot, item.relDir);
       if (onProgress) onProgress(i + 1, items.length, path.basename(item.abs));
-      results.push(await this.upload(item.abs, dest));
+      results.push(await this.upload(item.abs, dest, null, control));
     }
     return results;
   }
@@ -503,4 +662,4 @@ class DiscordDrive extends EventEmitter {
   }
 }
 
-module.exports = { DiscordDrive, testConnection };
+module.exports = { DiscordDrive, testConnection, UploadCanceled, isCancelError };
