@@ -121,6 +121,10 @@ without a Save As dialog:
   remaining, and each row can be **paused**, **resumed**, **retried** after a
   failure, or canceled. Pausing or failing keeps the chunks that already
   landed, so picking the upload back up re-sends only what's missing
+- **Drag out to the desktop** — drag a file from the list straight into
+  Explorer or Finder. Files live on Discord, so the first drag fetches a local
+  copy (with progress) and the drag itself works from then on; a ⇱ next to the
+  name marks the ones that are ready
 - **In-app preview** — images, PDFs, video, audio, and text/code files open
   in a full-window preview (`Preview` button, or `p`) without a Save As
   dialog; the file is reassembled in memory over Discord's REST API and
@@ -283,7 +287,16 @@ down. If your server is boosted, raise it; that's where the real gain is.
 - **Trash vs. permanent delete**: moving a file to Trash only flips a flag
   in the metadata index — its chunks stay in the channel until you
   **Empty Trash**, which is the one action that actually deletes messages
-  from Discord.
+  from Discord. That's one DELETE per chunk and can run for minutes on a full
+  Trash, so it reports progress as a row in the list rather than appearing to
+  hang. The metadata index is rewritten once at the end, so quitting midway
+  leaves the already-deleted files still listed — emptying again clears them.
+- **Drag out**: an OS drag has to hand over a file that already exists on
+  disk, and these live on Discord — so dragging a file that isn't cached yet
+  starts the download instead of the drag, and you drag again once it's ready
+  (a ⇱ marks cached files). Copies live in `drag-cache` beside the config,
+  capped at 2 GB and 7 days, oldest evicted first. They're a convenience, not
+  data: deleting the folder costs nothing but a re-download.
 - **Copy Link**: copies the Discord CDN URL of a file's first chunk. Works
   cleanly for small (single-chunk) files; for anything split into multiple
   chunks it's a partial link, and either way Discord CDN links can expire.

@@ -72,10 +72,22 @@ function tierLimitBytes(premiumTier) {
   return 10 * 1024 * 1024; // tier 0/1: current Discord baseline upload limit
 }
 
+// Reads a response body exactly once and fully, then parses it if it happens to
+// be JSON. Discord's own errors are JSON, but the ones that come from Cloudflare
+// in front of it (429s under load, 5xx) are HTML — and res.json() on those
+// rejects partway through, leaving the response stream half-read.
+async function readBody(res) {
+  let text = '';
+  try { text = await res.text(); } catch (e) { /* connection died mid-body */ }
+  try { return { text, data: text ? JSON.parse(text) : {} }; } catch (e) { return { text, data: {} }; }
+}
+
 async function responseError(res) {
-  let data = {};
-  try { data = await res.json(); } catch (e) { /* body wasn't JSON */ }
-  const err = new Error(data.message || `Discord API error ${res.status}`);
+  const { text, data } = await readBody(res);
+  // Fall back to a snippet of a non-JSON body — "Discord API error 429" alone
+  // hides whether it came from Discord or the proxy in front of it.
+  const snippet = text ? text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+  const err = new Error(data.message || snippet || `Discord API error ${res.status}`);
   err.status = res.status;
   err.code = data.code;
   return err;
@@ -90,10 +102,17 @@ async function apiRequest(token, pathname, opts = {}) {
     const res = await fetch(`${API_BASE}${pathname}`, { ...opts, headers });
     if (res.status === 429) {
       attempt += 1;
-      if (attempt > 5) throw await responseError(res);
-      let retryAfter = 1;
-      try { retryAfter = (await res.json()).retry_after || 1; } catch (e) { /* ignore */ }
-      await sleep(Math.ceil(retryAfter * 1000));
+      // Read the body before deciding, so it's drained either way — a 429 whose
+      // body is never consumed is the one response we produce a lot of.
+      const { text, data } = await readBody(res);
+      if (attempt > 5) {
+        const err = new Error(data.message || `Discord API error 429 (rate limited)`);
+        err.status = 429;
+        err.code = data.code;
+        err.body = text.slice(0, 200);
+        throw err;
+      }
+      await sleep(Math.ceil((data.retry_after || 1) * 1000));
       continue;
     }
     if (!res.ok) throw await responseError(res);
@@ -618,17 +637,24 @@ class DiscordDrive extends EventEmitter {
     });
   }
 
-  async emptyTrash() {
+  // Reports progress per deleted chunk, not per file: one 4 GB file is
+  // hundreds of DELETEs and would otherwise sit at 0% for minutes.
+  async emptyTrash(onProgress) {
     return this._withLock(async () => {
       const trashed = this.metadata.files.filter((f) => f.trashed);
+      const total = trashed.reduce((n, f) => n + (f.chunks ? f.chunks.length : 0), 0);
+      let done = 0;
+      if (onProgress) onProgress(0, total, null);
       for (const entry of trashed) {
         for (const msgId of entry.chunks) {
           await this._request(`/channels/${this.channelId}/messages/${msgId}`, { method: 'DELETE' }).catch(() => {});
+          done += 1;
+          if (onProgress) onProgress(done, total, entry.name);
         }
       }
       this.metadata.files = this.metadata.files.filter((f) => !f.trashed);
       await this.saveMetadata();
-      return trashed.length;
+      return { files: trashed.length, chunks: total };
     });
   }
 

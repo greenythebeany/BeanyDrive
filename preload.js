@@ -23,6 +23,16 @@ contextBridge.exposeInMainWorld('api', {
   onUploads: (cb) => ipcRenderer.on('drive:uploads', (e, data) => cb(data)),
   onUploadDone: (cb) => ipcRenderer.on('drive:uploadDone', (e, data) => cb(data)),
   onDownloadProgress: (cb) => ipcRenderer.on('drive:downloadProgress', (e, data) => cb(data)),
+  // Long-running drive operations that aren't uploads (currently Empty Trash).
+  onTaskProgress: (cb) => ipcRenderer.on('drive:taskProgress', (e, data) => cb(data)),
+  onTaskDone: (cb) => ipcRenderer.on('drive:taskDone', (e, data) => cb(data)),
+
+  // Drag out to Explorer/Finder: prepare fetches a local copy, startDrag hands
+  // that copy to the OS. Send, not invoke — startDrag must run inside the
+  // dragstart gesture.
+  onDragCache: (cb) => ipcRenderer.on('drive:dragCache', (e, data) => cb(data)),
+  prepareDrag: (fileId) => ipcRenderer.invoke('drive:prepareDrag', { fileId }),
+  startDrag: (fileId) => ipcRenderer.send('drive:startDrag', { fileId }),
   onPreviewProgress: (cb) => ipcRenderer.on('drive:previewProgress', (e, data) => cb(data)),
 
   // Electron 32 dropped the File.path augmentation the renderer used to read

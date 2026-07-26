@@ -30,7 +30,8 @@
       "renderer/**/*",
       "update-checker.js",
       "upload-resume.js",
-      "upload-stats.js"
+      "upload-stats.js",
+      "drag-cache.js"
     ],
     "icon": "icon.png",
     "win": {

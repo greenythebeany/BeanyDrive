@@ -223,6 +223,9 @@
     appVersion: '',
     toast: null,
     uploads: [],
+    tasks: [], // long-running drive operations (Empty Trash, drag prep), shown as progress rows
+    dragReady: new Set(),     // file ids with a local copy, draggable right now
+    dragPreparing: new Set(), // file ids currently being fetched for a drag
     dragOver: false,
     previewOverlay: null,
     detailThumb: null,
@@ -288,6 +291,24 @@
   window.api.onUploads((rows) => {
     state.uploads = rows;
     render();
+  });
+  window.api.onDragCache(({ ready, preparing }) => {
+    state.dragReady = new Set(ready);
+    state.dragPreparing = new Set(preparing);
+    render();
+  });
+  window.api.onTaskProgress(({ taskId, label, progress, detail }) => {
+    let t = state.tasks.find((x) => x.taskId === taskId);
+    if (!t) { t = { taskId, label, progress: 0, detail: '' }; state.tasks.push(t); }
+    t.label = label;
+    t.progress = progress;
+    t.detail = detail;
+    render();
+  });
+  window.api.onTaskDone(({ taskId, ok, message }) => {
+    state.tasks = state.tasks.filter((t) => t.taskId !== taskId);
+    showToast(message);
+    if (!ok) render();
   });
   // Terminal outcomes only — a paused or failed upload keeps its row instead.
   window.api.onUploadDone(({ name, ok, error, canceled }) => {
@@ -665,14 +686,40 @@
     });
   }
 
+  // Dragging a file to the desktop needs a real file on disk, and these live on
+  // Discord — so the first drag can't be the one that lands. It kicks off the
+  // download instead (progress shows as a task row) and the next drag works.
+  function startRowDrag(ev, r) {
+    ev.preventDefault(); // Electron's startDrag replaces the HTML5 drag
+    if (state.dragReady.has(r.id)) {
+      window.api.startDrag(r.id);
+      return;
+    }
+    if (state.dragPreparing.has(r.id)) {
+      showToast(`Still preparing ${r.name}…`);
+      return;
+    }
+    apiCall(window.api.prepareDrag(r.id), (res) => {
+      if (!res.ok) showToast(res.error || 'Could not prepare that file');
+      else if (res.ready) showToast(`${r.name} is ready — drag it again`);
+      else showToast(`Fetching ${r.name} — drag it again when it's ready`);
+    });
+  }
+
+  function emptyingTrash() {
+    return state.tasks.some((t) => t.label === 'Emptying Trash');
+  }
   function requestEmptyTrash() {
+    if (emptyingTrash()) { showToast('Already emptying the Trash'); return; }
     if (state.dontAskAgainTrash) confirmEmptyTrash();
     else { state.emptyTrashOpen = true; render(); }
   }
   function confirmEmptyTrash() {
     state.emptyTrashOpen = false;
     render();
-    apiCall(window.api.emptyTrash(), () => showToast('Trash emptied'));
+    // The toast comes from the task's done event — this can run for minutes,
+    // and the progress row is what reports it in the meantime.
+    apiCall(window.api.emptyTrash());
   }
   function cancelEmptyTrash() { state.emptyTrashOpen = false; render(); }
 
@@ -903,12 +950,23 @@
       </div>`;
   }
 
+  // Files can be dragged to Explorer/Finder, but only once a local copy exists
+  // — see startRowDrag. Folders aren't draggable; there's no folder download.
+  function dragAttrs(r) {
+    return r.isFolder ? '' : ' draggable="true"';
+  }
+  function dragClass(r) {
+    if (r.isFolder) return '';
+    if (state.dragPreparing.has(r.id)) return ' drag-preparing';
+    return state.dragReady.has(r.id) ? ' drag-ready' : '';
+  }
+
   function buildRows(rows) {
     if (state.viewMode === 'grid') {
       return `<div class="file-grid">${rows.map((r) => {
         const oversized = !r.isFolder && r.chunks && r.chunks.length > 1;
         return `
-        <div class="file-card ${r.id === state.selectedId ? 'active' : ''}" data-row="${esc(String(r.id))}">
+        <div class="file-card ${r.id === state.selectedId ? 'active' : ''}${dragClass(r)}" data-row="${esc(String(r.id))}"${dragAttrs(r)}>
           <div class="card-icon">${renderRowIcon(r, 34)}${oversized ? '<span class="card-flag" title="split into multiple chunks">!</span>' : ''}</div>
           <span class="card-name">${!r.isFolder && r.starred ? '★ ' : ''}${esc(r.name)}</span>
           ${!r.isFolder && (r.tags || []).length ? `<div class="card-tags">${renderTagChips(r.tags)}</div>` : ''}
@@ -918,7 +976,7 @@
     return rows.map((r) => {
       const showMeta = !r.isFolder && !state.compact;
       return `
-      <div class="file-row ${r.id === state.selectedId ? 'active' : ''}" data-row="${esc(String(r.id))}">
+      <div class="file-row ${r.id === state.selectedId ? 'active' : ''}${dragClass(r)}" data-row="${esc(String(r.id))}"${dragAttrs(r)}>
         <div class="file-icon">${renderRowIcon(r, 20)}</div>
         <div class="file-main">
           <span class="file-name" style="${r.id === state.selectedId ? `color:${accentHex()}` : ''}">${!r.isFolder && r.starred ? '★ ' : ''}${esc(r.name)}</span>
@@ -1171,13 +1229,24 @@
               <div class="icon-btn" id="new-folder-btn" title="new folder (n)">+ folder</div>
               <div class="icon-btn" id="upload-btn" title="upload">+ upload</div>
             </div>
-            ${state.nav === 'trash' ? '<div class="empty-trash-link" id="empty-trash-link">Empty Trash</div>' : ''}
+            ${state.nav === 'trash'
+              ? (emptyingTrash()
+                ? '<div class="empty-trash-link busy">Emptying…</div>'
+                : '<div class="empty-trash-link" id="empty-trash-link">Empty Trash</div>')
+              : ''}
           </div>
           <div class="list-body" id="list-body">
+            ${state.tasks.map((t) => `
+              <div class="upload-row task-row">
+                <span class="upload-name">${esc(t.label)}</span>
+                <span class="upload-detail">${esc(t.detail || '')}</span>
+                <div class="upload-bar-track"><div class="upload-bar-fill" style="width:${t.progress}%"></div></div>
+                <span class="upload-pct">${t.progress}%</span>
+              </div>`).join('')}
             ${state.uploads.map((u) => uploadRow(u)).join('')}
             ${state.connection.status !== 'connected' ? `
               <div class="center-msg">${esc(conn.label === 'not connected' ? 'Not connected — open Settings (,) to add your bot token and channel ID.' : conn.label)}</div>`
-              : (view.rows.length === 0 && state.uploads.length === 0 ? `
+              : (view.rows.length === 0 && state.uploads.length === 0 && state.tasks.length === 0 ? `
               <div class="empty-state">
                 <div class="empty-icon">${faIcon(state.searchQuery ? 'file' : 'folderOpen', 32)}</div>
                 <div>${state.searchQuery ? `No results for "${esc(state.searchQuery)}"` : 'This folder is empty. Press u or drag files in to upload.'}</div>
@@ -1247,6 +1316,10 @@
       el.addEventListener('dblclick', () => {
         const r = rowMeta[el.dataset.row] || rowMeta[Number(el.dataset.row)];
         if (r && r.isFolder) selectNav(r.targetNav);
+      });
+      el.addEventListener('dragstart', (ev) => {
+        const r = rowMeta[el.dataset.row] || rowMeta[Number(el.dataset.row)];
+        if (r && !r.isFolder) startRowDrag(ev, r);
       });
     });
 

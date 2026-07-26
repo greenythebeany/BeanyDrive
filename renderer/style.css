@@ -149,6 +149,12 @@ input::placeholder { color: var(--text-dimmer); }
 .icon-btn:hover { border-color: var(--accent); color: var(--text); }
 .empty-trash-link { margin-top: 8px; font-size: 11px; color: var(--bg-close-hover); cursor: pointer; display: inline-block; }
 .empty-trash-link:hover { text-decoration: underline; }
+/* a file with a local copy can be dragged straight to Explorer/Finder */
+.file-row.drag-ready .file-name::after,
+.file-card.drag-ready .card-name::after { content: ' ⇱'; color: var(--accent); font-size: 10px; }
+.file-row.drag-preparing, .file-card.drag-preparing { opacity: 0.65; }
+.empty-trash-link.busy { color: var(--text-dimmer); cursor: default; }
+.empty-trash-link.busy:hover { text-decoration: none; }
 
 .list-body { flex: 1; overflow-y: auto; }
 

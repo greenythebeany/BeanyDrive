@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, clipboard, protocol, net, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, clipboard, protocol, net, shell, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
@@ -8,6 +8,7 @@ const { guessMime } = require('./util');
 const { checkForUpdates } = require('./update-checker');
 const { createResumeStore } = require('./upload-resume');
 const { createRateTracker } = require('./upload-stats');
+const { createDragCache } = require('./drag-cache');
 
 const PREVIEW_MAX_BYTES = 500 * 1024 * 1024;
 
@@ -22,6 +23,15 @@ protocol.registerSchemesAsPrivileged([
 
 let mainWindow = null;
 const drive = new DiscordDrive();
+
+// Aborting an in-flight request (pause, cancel) can leave undici rejecting a
+// promise internally, which Node reports as an unhandled rejection with no
+// indication of where it came from. Log it with a marker instead of letting it
+// print a bare warning — and don't let it take the process down.
+process.on('unhandledRejection', (reason) => {
+  const err = reason instanceof Error ? reason : new Error(String(reason));
+  console.error('[BeanyDrive] unhandled rejection:', err.stack || err.message);
+});
 
 function pushStatus(message) {
   if (mainWindow) mainWindow.webContents.send('drive:status', { status: drive.status, message });
@@ -96,6 +106,8 @@ app.whenReady().then(() => {
   });
 
   drive.resumeStore = createResumeStore(path.join(app.getPath('userData'), 'uploads-resume.json'));
+  dragCache = createDragCache(path.join(app.getPath('userData'), 'drag-cache'));
+  dragCache.sweep().then(() => pushDragCache()).catch(() => {});
 
   createWindow();
   autoConnect();
@@ -185,6 +197,7 @@ ipcMain.handle('files:pickFiles', async () => {
 });
 
 let uploadSeq = 0;
+let taskSeq = 0; // progress rows that aren't uploads: Empty Trash, drag prep
 // Every upload the renderer has a row for, in row order. Unlike a plain queue
 // these outlive the transfer: a paused or failed job stays here holding the
 // state its Resume/Retry button needs.
@@ -413,6 +426,74 @@ ipcMain.handle('drive:copyLink', async (e, { fileId }) => {
   return { ok: true, multiChunk };
 });
 
+// --- drag out to the desktop ---
+// An OS drag needs a path that already exists, and these files live on Discord,
+// so a drag-out is two steps: materialize a local copy, then drag it. The first
+// drag of an uncached file starts the download and reports "try again".
+let dragCache = null;
+const dragPreparing = new Set();
+
+async function pushDragCache() {
+  if (!dragCache) return;
+  const onDisk = new Set((await dragCache.list()).map((e) => e.name));
+  const ready = drive.metadata.files
+    .filter((f) => onDisk.has(path.basename(dragCache.pathFor(f.id, f.name))))
+    .map((f) => f.id);
+  send('drive:dragCache', { ready, preparing: [...dragPreparing] });
+}
+
+ipcMain.handle('drive:prepareDrag', async (e, { fileId }) => {
+  try {
+    requireConnected();
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+  const entry = drive.getEntry(fileId);
+  if (!entry) return { ok: false, error: 'File not found' };
+  if (dragCache.resolve(entry.id, entry.name, entry.size)) return { ok: true, ready: true };
+  if (dragPreparing.has(fileId)) return { ok: true, ready: false };
+
+  dragPreparing.add(fileId);
+  pushDragCache();
+  const taskId = `t${Date.now()}_${taskSeq++}`;
+  const label = `Preparing ${entry.name}`;
+  send('drive:taskProgress', { taskId, label, progress: 0, detail: 'fetching…' });
+
+  // Deliberately not awaited: the renderer gets its answer now and watches the
+  // task row for the rest.
+  (async () => {
+    try {
+      await drive.download(fileId, dragCache.tempPathFor(entry.id, entry.name), (cur, total) => {
+        send('drive:taskProgress', {
+          taskId, label, progress: Math.round((cur / total) * 100), detail: `${cur}/${total} chunks`,
+        });
+      });
+      await dragCache.commit(entry.id, entry.name);
+      send('drive:taskDone', { taskId, ok: true, message: `${entry.name} ready — drag it out now` });
+    } catch (err) {
+      await dragCache.discard(entry.id, entry.name);
+      send('drive:taskDone', { taskId, ok: false, message: `Couldn't prepare ${entry.name}: ${err.message}` });
+    } finally {
+      dragPreparing.delete(fileId);
+      pushDragCache();
+    }
+  })();
+
+  return { ok: true, ready: false };
+});
+
+// Must be a send, not an invoke: startDrag has to run inside the dragstart
+// gesture, and awaiting an invoke round trip loses it.
+ipcMain.on('drive:startDrag', (e, { fileId }) => {
+  if (!dragCache) return;
+  const entry = drive.getEntry(fileId);
+  if (!entry) return;
+  const file = dragCache.resolve(entry.id, entry.name, entry.size);
+  if (!file) return; // stale cache entry; the next prepare will refetch it
+  const icon = nativeImage.createFromPath(path.join(__dirname, 'icon.png')).resize({ width: 64, height: 64 });
+  e.sender.startDrag({ file, icon });
+});
+
 // --- preview ---
 // Reassembles the file in memory (see discord-client's fetchBytes) instead
 // of writing to disk, so the renderer can show it without a Save As dialog.
@@ -449,7 +530,35 @@ function wrapMutation(fn) {
 
 ipcMain.handle('drive:trash', wrapMutation(({ fileId }) => drive.trashFile(fileId)));
 ipcMain.handle('drive:restore', wrapMutation(({ fileId }) => drive.restoreFile(fileId)));
-ipcMain.handle('drive:emptyTrash', wrapMutation(() => drive.emptyTrash()));
+// Not a wrapMutation like its neighbours: emptying is the one mutation that
+// can run for minutes (one DELETE per chunk), so it reports progress instead
+// of leaving the window looking frozen until it returns.
+ipcMain.handle('drive:emptyTrash', async () => {
+  requireConnected();
+  const taskId = `t${Date.now()}_${taskSeq++}`;
+  const label = 'Emptying Trash';
+  send('drive:taskProgress', { taskId, label, progress: 0, detail: 'preparing…' });
+  try {
+    const { files, chunks } = await drive.emptyTrash((done, total, name) => {
+      send('drive:taskProgress', {
+        taskId,
+        label,
+        progress: total ? Math.round((done / total) * 100) : 100,
+        detail: total ? `${done}/${total} chunks${name ? ` · ${name}` : ''}` : 'nothing to delete',
+      });
+    });
+    send('drive:taskDone', {
+      taskId,
+      ok: true,
+      message: files ? `Trash emptied — ${files} file(s), ${chunks} chunk(s)` : 'Trash was already empty',
+    });
+    pushUpdate();
+    return { files, chunks };
+  } catch (err) {
+    send('drive:taskDone', { taskId, ok: false, message: `Empty Trash failed: ${err.message}` });
+    throw err;
+  }
+});
 ipcMain.handle('drive:star', wrapMutation(({ fileId, value }) => drive.starFile(fileId, value)));
 ipcMain.handle('drive:rename', wrapMutation(({ fileId, name }) => drive.renameFile(fileId, name)));
 ipcMain.handle('drive:addTag', wrapMutation(({ fileId, tag }) => drive.addTag(fileId, tag)));
