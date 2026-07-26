@@ -156,12 +156,20 @@ input::placeholder { color: var(--text-dimmer); }
 .upload-name { color: var(--text-dim); font-size: 12px; flex: 1; user-select: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .upload-bar-track { width: 80px; height: 4px; background: var(--border-dim); position: relative; flex-shrink: 0; }
 .upload-bar-fill { height: 100%; background: var(--accent); }
-.upload-bar-fill.canceling { background: var(--text-dimmer); }
-/* wide enough for "canceling", which replaces the percentage mid-cancel */
-.upload-pct { color: var(--text-dimmer); font-size: 11px; width: 58px; text-align: right; flex-shrink: 0; }
-.upload-cancel { color: var(--text-dimmer); font-size: 11px; line-height: 1; padding: 2px 4px; cursor: pointer; flex-shrink: 0; }
-.upload-cancel:hover { color: var(--accent); }
-.upload-cancel.disabled { opacity: 0.35; cursor: default; }
+.upload-bar-fill.paused { background: var(--text-dimmer); }
+.upload-bar-fill.failed { background: var(--bg-close-hover); }
+/* speed · ETA while running, the error message when one failed */
+.upload-detail {
+  color: var(--text-dimmer); font-size: 11px; flex-shrink: 0; max-width: 190px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right;
+}
+.upload-row.failed .upload-detail { color: var(--bg-close-hover); }
+.upload-pct { color: var(--text-dimmer); font-size: 11px; width: 34px; text-align: right; flex-shrink: 0; }
+.upload-btn {
+  color: var(--text-dimmer); font-size: 10px; line-height: 1; padding: 3px 5px;
+  cursor: pointer; flex-shrink: 0; border: 1px solid transparent;
+}
+.upload-btn:hover { color: var(--accent); border-color: var(--border-dim); }
 
 .empty-state {
   padding: 40px 20px; display: flex; flex-direction: column; align-items: center; gap: 10px;

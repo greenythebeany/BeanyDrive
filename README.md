@@ -117,9 +117,10 @@ without a Save As dialog:
   upload (folder structure is preserved); large uploads that hit Discord's
   size limit automatically retry at a smaller chunk size
 - **Uploads built for big files** — chunks upload several at a time
-  (configurable, default 4), every upload can be canceled from its progress
-  row, and an upload interrupted by a network error resumes from the last
-  chunk that made it instead of starting over
+  (configurable, default 4), progress rows show transfer speed and time
+  remaining, and each row can be **paused**, **resumed**, **retried** after a
+  failure, or canceled. Pausing or failing keeps the chunks that already
+  landed, so picking the upload back up re-sends only what's missing
 - **In-app preview** — images, PDFs, video, audio, and text/code files open
   in a full-window preview (`Preview` button, or `p`) without a Save As
   dialog; the file is reassembled in memory over Discord's REST API and
@@ -260,14 +261,23 @@ down. If your server is boosted, raise it; that's where the real gain is.
 - **Parallel uploads**: how many chunks are sent at once is configurable in
   Settings (default 4, max 8) — see [Upload speed](#upload-speed) for what to
   actually set it to.
-- **Resuming**: when an upload dies partway (network drop, closed app), the
-  chunks that made it are deliberately left in the channel and recorded in
-  `uploads-resume.json` beside the config. Re-uploading the same file to the
-  same folder picks up from there. Editing the file invalidates the record —
-  resuming onto changed bytes would produce a corrupt file — and records
-  nobody resumes within a week are swept on connect, their chunks deleted.
-  **Canceling** an upload deletes its chunks immediately; that's the
-  difference between canceling and failing.
+- **Pause, resume, retry, cancel**: every progress row carries controls, and
+  the difference between them is what happens to the chunks already uploaded.
+  **Pause** and **failure** keep them, so resuming or retrying re-sends only
+  what's missing. **Cancel** deletes them — including when you dismiss a
+  paused or failed row, which is the same thing as giving up on it. A paused
+  upload survives as long as the app is open; close the app and it becomes a
+  resume record like any other.
+- **Resuming**: the chunks that made it are recorded in `uploads-resume.json`
+  beside the config. Re-uploading the same file to the same folder picks up
+  from there, whether it stopped from a pause, a crash, or a network drop.
+  Editing the file invalidates the record — resuming onto changed bytes would
+  produce a corrupt file — and records nobody resumes within a week are swept
+  on connect, their chunks deleted.
+- **Speed and ETA**: measured over a rolling 15-second window of chunk
+  completions, so the number reacts to your connection actually changing
+  rather than averaging the whole transfer. Folder uploads show a plain
+  percentage — their progress is counted in files, not bytes.
 - **Folders**: virtual, same as the original — they exist as path prefixes
   on files plus an explicit folder list for empty directories.
 - **Trash vs. permanent delete**: moving a file to Trash only flips a flag

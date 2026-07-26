@@ -43,10 +43,27 @@ class UploadCanceled extends Error {
   }
 }
 
+// Thrown when the user pauses. Same stop, opposite cleanup: a pause deliberately
+// leaves the uploaded chunks and the resume record in place so the upload can be
+// picked up again, where a cancel deletes both.
+class UploadPaused extends Error {
+  constructor() {
+    super('Upload paused');
+    this.name = 'UploadPaused';
+    this.paused = true;
+  }
+}
+
 // An in-flight chunk POST aborted via AbortController surfaces as a DOMException
-// named 'AbortError' rather than our own error type.
+// named 'AbortError' rather than our own error type. Pausing aborts the same
+// way, so an AbortError alone doesn't say which one it was — callers pair this
+// with the control's own paused/canceled state to decide.
 function isCancelError(err) {
   return !!err && (err.canceled === true || err.name === 'AbortError');
+}
+
+function isPauseError(err) {
+  return !!err && err.paused === true;
 }
 
 function tierLimitBytes(premiumTier) {
@@ -273,16 +290,20 @@ class DiscordDrive extends EventEmitter {
     if (key && this.resumeStore) this.resumeStore.delete(key);
   }
 
-  // `control` is an optional { signal, isCanceled } pair: the AbortSignal kills
-  // the chunk POSTs currently in flight, and isCanceled() is checked before each
-  // chunk. On cancel the partial chunks are deleted so nothing is orphaned; on
-  // failure they're kept and recorded, so retrying resumes instead of restarting.
+  // `control` is an optional { signal, isCanceled, isPaused } set: the AbortSignal
+  // kills the chunk POSTs currently in flight, and the two predicates are checked
+  // before each chunk. Three ways to stop, three cleanups — cancel deletes the
+  // partial chunks so nothing is orphaned; pause and failure both keep them, so
+  // resuming or retrying picks up where it stopped instead of restarting.
   async upload(localPath, destFolder, onProgress, control = {}) {
     this._ensureReady();
-    const checkCanceled = () => {
+    // Pause is checked first: if both are somehow set, keeping the chunks is the
+    // recoverable choice.
+    const checkStopped = () => {
+      if (control.isPaused && control.isPaused()) throw new UploadPaused();
       if (control.isCanceled && control.isCanceled()) throw new UploadCanceled();
     };
-    checkCanceled();
+    checkStopped();
     const name = path.basename(localPath);
     const stat = await fsp.stat(localPath);
     const size = stat.size;
@@ -309,15 +330,17 @@ class DiscordDrive extends EventEmitter {
       if (onProgress) onProgress(1, 1);
     } else {
       chunkIds = await this._uploadChunks({
-        localPath, size, fileId, name, dest, key, saved, onProgress, control, checkCanceled,
+        localPath, size, fileId, name, dest, key, saved, onProgress, control, checkStopped,
       });
     }
 
-    // A cancel that lands between the last chunk and the metadata save still
-    // counts — without this the file would silently complete anyway.
+    // A stop that lands between the last chunk and the metadata save still
+    // counts — without this the file would silently complete anyway. A pause
+    // here keeps everything, so resuming just re-saves the metadata.
     try {
-      checkCanceled();
+      checkStopped();
     } catch (err) {
+      if (isPauseError(err)) throw err;
       await this._abandonUpload(key, chunkIds.filter(Boolean));
       throw err;
     }
@@ -338,7 +361,7 @@ class DiscordDrive extends EventEmitter {
   // Runs up to `uploadConcurrency` chunk POSTs at a time, filling a
   // position-indexed array so the chunk order survives out-of-order completion.
   // Retries the whole file at half the chunk size on 413, as before.
-  async _uploadChunks({ localPath, size, fileId, name, dest, key, saved, onProgress, control, checkCanceled }) {
+  async _uploadChunks({ localPath, size, fileId, name, dest, key, saved, onProgress, control, checkStopped }) {
     let carried = (saved && saved.chunks) || {};
     let attempt = 0;
 
@@ -381,7 +404,7 @@ class DiscordDrive extends EventEmitter {
           if (idx >= total) return;
           if (chunkIds[idx]) continue; // already uploaded by an earlier attempt
           try {
-            checkCanceled();
+            checkStopped();
             const data = await readChunk(handle, idx, this.chunkSize, size);
             recordChunk(idx, await this._sendChunk(fileId, idx, total, name, data, false, control.signal));
           } catch (err) {
@@ -401,6 +424,11 @@ class DiscordDrive extends EventEmitter {
       if (!failure) return chunkIds;
 
       const uploaded = chunkIds.filter(Boolean);
+      // Pausing aborts the in-flight POSTs exactly like canceling does, so the
+      // error alone can't tell them apart — the control's state decides, and a
+      // pause keeps everything it has uploaded so far.
+      const pausing = isPauseError(failure) || (isCancelError(failure) && control.isPaused && control.isPaused());
+      if (pausing) throw new UploadPaused();
       if (isCancelError(failure)) {
         await this._abandonUpload(key, uploaded);
         throw new UploadCanceled();
@@ -435,7 +463,30 @@ class DiscordDrive extends EventEmitter {
     return removed;
   }
 
-  // Canceling mid-folder keeps the files already uploaded (they're in metadata
+  // Throws away a resumable upload the user gave up on — the counterpart to
+  // cancelling one that's actually running. Used when a paused or failed row is
+  // dismissed, since its chunks are still sitting in the channel.
+  async discardResumable(localPath, destFolder) {
+    if (!this.resumeStore) return 0;
+    let stat;
+    try {
+      stat = await fsp.stat(localPath);
+    } catch (e) {
+      return 0; // file's gone; the weekly sweep will catch the chunks
+    }
+    const key = resumeKey({
+      localPath, size: stat.size, mtimeMs: stat.mtimeMs,
+      dest: normalizePath(destFolder), channelId: this.channelId,
+    });
+    const entry = this.resumeStore.get(key);
+    if (!entry) return 0;
+    const ids = Object.values(entry.chunks || {}).filter(Boolean);
+    await this._deleteMessages(ids);
+    this.resumeStore.delete(key);
+    return ids.length;
+  }
+
+  // Stopping mid-folder keeps the files already uploaded (they're in metadata
   // and would have to be trashed individually anyway) and stops before the next.
   async uploadFolder(localFolder, destFolder, onProgress, control = {}) {
     this._ensureReady();
@@ -451,6 +502,7 @@ class DiscordDrive extends EventEmitter {
 
     const results = [];
     for (let i = 0; i < items.length; i++) {
+      if (control.isPaused && control.isPaused()) throw new UploadPaused();
       if (control.isCanceled && control.isCanceled()) throw new UploadCanceled();
       const item = items[i];
       const dest = joinPath(targetRoot, item.relDir);
@@ -664,4 +716,7 @@ class DiscordDrive extends EventEmitter {
   }
 }
 
-module.exports = { DiscordDrive, testConnection, UploadCanceled, isCancelError };
+module.exports = {
+  DiscordDrive, testConnection,
+  UploadCanceled, UploadPaused, isCancelError, isPauseError,
+};

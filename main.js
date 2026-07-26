@@ -2,11 +2,12 @@ const { app, BrowserWindow, ipcMain, dialog, clipboard, protocol, net, shell } =
 const path = require('path');
 const fs = require('fs');
 const { pathToFileURL } = require('url');
-const { DiscordDrive, testConnection, isCancelError } = require('./discord-client');
+const { DiscordDrive, testConnection, isCancelError, isPauseError } = require('./discord-client');
 const driveConfig = require('./drive-config');
 const { guessMime } = require('./util');
 const { checkForUpdates } = require('./update-checker');
 const { createResumeStore } = require('./upload-resume');
+const { createRateTracker } = require('./upload-stats');
 
 const PREVIEW_MAX_BYTES = 500 * 1024 * 1024;
 
@@ -184,56 +185,129 @@ ipcMain.handle('files:pickFiles', async () => {
 });
 
 let uploadSeq = 0;
-// Live uploads, keyed by the id the renderer sees on its progress rows, so a
-// cancel click can reach the job whether it's mid-transfer or still queued.
-const activeUploads = new Map();
+// Every upload the renderer has a row for, in row order. Unlike a plain queue
+// these outlive the transfer: a paused or failed job stays here holding the
+// state its Resume/Retry button needs.
+const uploadJobs = [];
+let pumping = false;
+let statsTimer = null;
 
-async function runUpload(paths, destFolder) {
-  const jobs = paths.map((p) => ({
-    uploadId: `u${Date.now()}_${uploadSeq++}`,
-    localPath: p,
-    name: path.basename(p),
-    canceled: false,
-    controller: new AbortController(),
-  }));
+function send(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+}
 
-  // Emit every row up front (not just the one being transferred) so queued
-  // files are cancelable too, instead of only the head of the batch.
-  for (const job of jobs) {
-    activeUploads.set(job.uploadId, job);
-    mainWindow.webContents.send('drive:uploadProgress', { uploadId: job.uploadId, name: job.name, progress: 0 });
-  }
+function jobSnapshot(job) {
+  return {
+    uploadId: job.uploadId,
+    name: job.name,
+    state: job.state,
+    progress: job.progress,
+    error: job.error || null,
+    // Byte-rate only means something for a single file; a folder job reports
+    // progress in files, so the renderer shows a plain percentage for those.
+    bytesPerSec: job.isDirectory ? null : job.rate.bytesPerSec(),
+    etaSeconds: job.isDirectory ? null : job.rate.etaSeconds(job.totalBytes),
+  };
+}
 
-  for (const job of jobs) {
-    const { uploadId, name } = job;
-    if (job.canceled) {
-      activeUploads.delete(uploadId);
-      mainWindow.webContents.send('drive:uploadDone', { uploadId, name, ok: false, canceled: true });
-      continue;
+function pushUploads() {
+  send('drive:uploads', uploadJobs.map(jobSnapshot));
+}
+
+// Speed and ETA have to keep moving while a single large chunk is in flight,
+// and no progress callback fires for seconds at a time — so tick them.
+function startStatsTicker() {
+  if (statsTimer) return;
+  statsTimer = setInterval(() => {
+    if (uploadJobs.some((j) => j.state === 'running')) pushUploads();
+    else stopStatsTicker();
+  }, 1000);
+}
+
+function stopStatsTicker() {
+  if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+}
+
+function removeJob(job) {
+  const idx = uploadJobs.indexOf(job);
+  if (idx !== -1) uploadJobs.splice(idx, 1);
+}
+
+async function runJob(job) {
+  job.state = 'running';
+  job.error = null;
+  job.paused = false;
+  job.canceled = false;
+  job.controller = new AbortController();
+  // A resumed job's old samples are separated from the new ones by however long
+  // it sat paused, which would read as a near-zero transfer rate.
+  job.rate.reset();
+  startStatsTicker();
+  pushUploads();
+
+  const control = {
+    signal: job.controller.signal,
+    isCanceled: () => job.canceled,
+    isPaused: () => job.paused,
+  };
+
+  const onProgress = (cur, total) => {
+    job.progress = total ? Math.round((cur / total) * 100) : 0;
+    if (!job.isDirectory && job.totalBytes && drive.chunkSize) {
+      // cur counts completed chunks; the last one is usually short, so cap it.
+      job.rate.push(Math.min(job.totalBytes, cur * drive.chunkSize));
     }
-    const control = { signal: job.controller.signal, isCanceled: () => job.canceled };
-    const onProgress = (cur, total) => {
-      mainWindow.webContents.send('drive:uploadProgress', { uploadId, name, progress: Math.round((cur / total) * 100) });
-    };
-    try {
-      const stat = fs.statSync(job.localPath);
-      if (stat.isDirectory()) {
-        await drive.uploadFolder(job.localPath, destFolder, onProgress, control);
-      } else {
-        await drive.upload(job.localPath, destFolder, onProgress, control);
-      }
-      mainWindow.webContents.send('drive:uploadDone', { uploadId, name, ok: true });
-    } catch (err) {
-      if (isCancelError(err)) {
-        mainWindow.webContents.send('drive:uploadDone', { uploadId, name, ok: false, canceled: true });
-      } else {
-        mainWindow.webContents.send('drive:uploadDone', { uploadId, name, ok: false, error: err.message });
-      }
-    } finally {
-      activeUploads.delete(uploadId);
+    pushUploads();
+  };
+
+  try {
+    const stat = fs.statSync(job.localPath);
+    job.isDirectory = stat.isDirectory();
+    job.totalBytes = job.isDirectory ? 0 : stat.size;
+
+    if (job.isDirectory) {
+      await drive.uploadFolder(job.localPath, job.destFolder, onProgress, control);
+    } else {
+      await drive.upload(job.localPath, job.destFolder, onProgress, control);
     }
-    pushUpdate();
+    removeJob(job);
+    send('drive:uploadDone', { uploadId: job.uploadId, name: job.name, ok: true });
+  } catch (err) {
+    if (isPauseError(err)) {
+      // Chunks and resume record intentionally left in place.
+      job.state = 'paused';
+    } else if (isCancelError(err)) {
+      removeJob(job);
+      send('drive:uploadDone', { uploadId: job.uploadId, name: job.name, ok: false, canceled: true });
+    } else {
+      // The row survives so it can be retried — the resume record means a retry
+      // re-sends only the chunks that didn't make it.
+      job.state = 'failed';
+      job.error = err.message;
+      send('drive:uploadDone', { uploadId: job.uploadId, name: job.name, ok: false, error: err.message });
+    }
   }
+  pushUploads();
+  pushUpdate();
+}
+
+async function pumpUploads() {
+  if (pumping) return;
+  pumping = true;
+  try {
+    for (;;) {
+      const job = uploadJobs.find((j) => j.state === 'queued');
+      if (!job) break;
+      await runJob(job);
+    }
+  } finally {
+    pumping = false;
+    stopStatsTicker();
+  }
+}
+
+function findJob(uploadId) {
+  return uploadJobs.find((j) => j.uploadId === uploadId) || null;
 }
 
 ipcMain.handle('drive:upload', async (e, { paths, destFolder }) => {
@@ -242,15 +316,77 @@ ipcMain.handle('drive:upload', async (e, { paths, destFolder }) => {
   } catch (err) {
     return { ok: false, error: err.message };
   }
-  runUpload(paths, destFolder);
+  for (const p of paths) {
+    uploadJobs.push({
+      uploadId: `u${Date.now()}_${uploadSeq++}`,
+      localPath: p,
+      destFolder,
+      name: path.basename(p),
+      state: 'queued',
+      progress: 0,
+      error: null,
+      isDirectory: false,
+      totalBytes: 0,
+      rate: createRateTracker(),
+      controller: null,
+      paused: false,
+      canceled: false,
+    });
+  }
+  pushUploads(); // rows for the whole batch appear at once, all controllable
+  pumpUploads();
   return { ok: true };
 });
 
-ipcMain.handle('drive:cancelUpload', (e, { uploadId }) => {
-  const job = activeUploads.get(uploadId);
+ipcMain.handle('drive:pauseUpload', (e, { uploadId }) => {
+  const job = findJob(uploadId);
   if (!job) return { ok: false, error: 'Upload already finished' };
-  job.canceled = true;
-  job.controller.abort(); // kills the chunk POST currently in flight
+  if (job.state === 'running') {
+    job.paused = true;
+    job.controller.abort(); // unwinds the in-flight chunk POSTs
+  } else if (job.state === 'queued') {
+    job.state = 'paused'; // never started; just don't pick it up
+  } else {
+    return { ok: false, error: `Cannot pause a ${job.state} upload` };
+  }
+  pushUploads();
+  return { ok: true };
+});
+
+// Backs both Resume (paused) and Retry (failed) — same operation, and the
+// resume record decides how much actually gets re-sent.
+ipcMain.handle('drive:resumeUpload', (e, { uploadId }) => {
+  const job = findJob(uploadId);
+  if (!job) return { ok: false, error: 'Upload no longer queued' };
+  if (job.state !== 'paused' && job.state !== 'failed') {
+    return { ok: false, error: `Cannot resume a ${job.state} upload` };
+  }
+  job.state = 'queued';
+  job.error = null;
+  pushUploads();
+  pumpUploads();
+  return { ok: true };
+});
+
+ipcMain.handle('drive:cancelUpload', async (e, { uploadId }) => {
+  const job = findJob(uploadId);
+  if (!job) return { ok: false, error: 'Upload already finished' };
+
+  if (job.state === 'running') {
+    job.canceled = true;
+    job.controller.abort();
+    return { ok: true }; // runJob does the cleanup and removes the row
+  }
+
+  // Paused and failed jobs have chunks sitting in the channel that only their
+  // resume record knows about; dropping the row without deleting them would
+  // leave exactly the orphans the sweep exists to prevent.
+  if (job.state === 'paused' || job.state === 'failed') {
+    await drive.discardResumable(job.localPath, job.destFolder).catch(() => {});
+  }
+  removeJob(job);
+  send('drive:uploadDone', { uploadId, name: job.name, ok: false, canceled: true });
+  pushUploads();
   return { ok: true };
 });
 

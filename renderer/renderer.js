@@ -123,6 +123,22 @@
     return new Date(epochSeconds * 1000).toISOString().slice(0, 10);
   }
 
+  function fmtSpeed(bytesPerSec) {
+    if (!bytesPerSec) return '';
+    if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`;
+    return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
+  }
+
+  // Coarse on purpose — chunked uploads over a rate limit make anything
+  // finer-grained than this look like it's lying.
+  function fmtEta(seconds) {
+    if (seconds == null || !Number.isFinite(seconds)) return '';
+    if (seconds < 60) return `${Math.max(1, Math.round(seconds))}s left`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m left`;
+    const hours = Math.floor(seconds / 3600);
+    return `${hours}h ${Math.round((seconds % 3600) / 60)}m left`;
+  }
+
   function categoryFor(filename) {
     const dot = filename.lastIndexOf('.');
     if (dot === -1) return 'other';
@@ -268,14 +284,13 @@
     state.connection.message = message;
     render();
   });
-  window.api.onUploadProgress(({ uploadId, name, progress }) => {
-    let u = state.uploads.find((x) => x.id === uploadId);
-    if (!u) { u = { id: uploadId, name, progress: 0 }; state.uploads.push(u); }
-    u.progress = progress;
+  // Main owns the row list; this is a wholesale replace, not a patch.
+  window.api.onUploads((rows) => {
+    state.uploads = rows;
     render();
   });
-  window.api.onUploadDone(({ name, ok, error, canceled, uploadId }) => {
-    state.uploads = state.uploads.filter((u) => u.id !== uploadId);
+  // Terminal outcomes only — a paused or failed upload keeps its row instead.
+  window.api.onUploadDone(({ name, ok, error, canceled }) => {
     if (ok) showToast(`Uploaded ${name}`);
     else if (canceled) showToast(`Canceled ${name}`);
     else showToast(`Failed: ${name}${error ? ' — ' + error : ''}`);
@@ -316,18 +331,18 @@
     });
   }
 
-  // The row sticks around showing "canceling" until main reports back — the
-  // in-flight chunk POST has to unwind and its partial chunks be cleaned up
-  // before the upload is really gone.
-  function cancelUpload(uploadId) {
-    const u = state.uploads.find((x) => x.id === uploadId);
-    if (!u || u.canceling) return;
-    u.canceling = true;
-    render();
-    apiCall(window.api.cancelUpload(uploadId), (res) => {
-      if (res && !res.ok) { u.canceling = false; render(); }
+  // Upload rows are owned by the main process, so these just fire the request —
+  // the row updates when the resulting snapshot arrives. Cancel takes a moment
+  // on a running upload: the in-flight chunk POSTs have to unwind and their
+  // partial chunks be deleted first.
+  function uploadAction(fn, uploadId) {
+    apiCall(fn(uploadId), (res) => {
+      if (res && !res.ok && res.error) showToast(res.error);
     });
   }
+  const cancelUpload = (id) => uploadAction(window.api.cancelUpload, id);
+  const pauseUpload = (id) => uploadAction(window.api.pauseUpload, id);
+  const resumeUpload = (id) => uploadAction(window.api.resumeUpload, id);
 
   function selectNav(id) { state.nav = id; state.searchQuery = ''; state.selectedId = null; render(); }
   function selectFile(id) { state.selectedId = id; render(); }
@@ -857,6 +872,37 @@
     return { color: 'var(--text-dim)', label: 'not connected', dot: '○' };
   }
 
+  // One progress row. Which controls show depends on the job's state in main:
+  // running gets pause, paused gets resume, failed gets retry, and every state
+  // can be dismissed with ✕ (which deletes any chunks already uploaded).
+  function uploadRow(u) {
+    const stateClass = u.state === 'failed' ? ' failed' : (u.state === 'paused' ? ' paused' : '');
+    let detail;
+    if (u.state === 'failed') detail = esc(u.error || 'failed');
+    else if (u.state === 'paused') detail = 'paused';
+    else if (u.state === 'queued') detail = 'queued';
+    else detail = [fmtSpeed(u.bytesPerSec), fmtEta(u.etaSeconds)].filter(Boolean).join(' · ');
+
+    const btn = (action, label, title) =>
+      `<div class="upload-btn" data-upload-action="${action}" data-upload-id="${esc(u.uploadId)}" title="${title}">${label}</div>`;
+
+    let controls = '';
+    if (u.state === 'running') controls = btn('pause', '❚❚', 'pause upload');
+    else if (u.state === 'queued') controls = btn('pause', '❚❚', 'hold this file');
+    else if (u.state === 'paused') controls = btn('resume', '▶', 'resume upload');
+    else if (u.state === 'failed') controls = btn('resume', '↻', 'retry — re-sends only the missing chunks');
+
+    return `
+      <div class="upload-row${stateClass}">
+        <span class="upload-name">${esc(u.name)}</span>
+        <span class="upload-detail" title="${esc(u.error || '')}">${detail}</span>
+        <div class="upload-bar-track"><div class="upload-bar-fill${stateClass}" style="width:${u.progress}%"></div></div>
+        <span class="upload-pct">${u.progress}%</span>
+        ${controls}
+        ${btn('cancel', '✕', u.state === 'running' ? 'cancel upload' : 'discard — deletes the chunks already uploaded')}
+      </div>`;
+  }
+
   function buildRows(rows) {
     if (state.viewMode === 'grid') {
       return `<div class="file-grid">${rows.map((r) => {
@@ -1128,15 +1174,7 @@
             ${state.nav === 'trash' ? '<div class="empty-trash-link" id="empty-trash-link">Empty Trash</div>' : ''}
           </div>
           <div class="list-body" id="list-body">
-            ${state.uploads.map((u) => `
-              <div class="upload-row">
-                <span class="upload-name">${esc(u.name)}</span>
-                <div class="upload-bar-track"><div class="upload-bar-fill${u.canceling ? ' canceling' : ''}" style="width:${u.progress}%"></div></div>
-                <span class="upload-pct">${u.canceling ? 'canceling' : `${u.progress}%`}</span>
-                ${u.canceling
-                  ? '<div class="upload-cancel disabled">✕</div>'
-                  : `<div class="upload-cancel" data-cancel-upload="${esc(u.id)}" title="cancel upload">✕</div>`}
-              </div>`).join('')}
+            ${state.uploads.map((u) => uploadRow(u)).join('')}
             ${state.connection.status !== 'connected' ? `
               <div class="center-msg">${esc(conn.label === 'not connected' ? 'Not connected — open Settings (,) to add your bot token and channel ID.' : conn.label)}</div>`
               : (view.rows.length === 0 && state.uploads.length === 0 ? `
@@ -1212,10 +1250,13 @@
       });
     });
 
-    root.querySelectorAll('[data-cancel-upload]').forEach((el) => {
+    root.querySelectorAll('[data-upload-action]').forEach((el) => {
       el.addEventListener('click', (e) => {
         e.stopPropagation();
-        cancelUpload(el.dataset.cancelUpload);
+        const id = el.dataset.uploadId;
+        if (el.dataset.uploadAction === 'pause') pauseUpload(id);
+        else if (el.dataset.uploadAction === 'resume') resumeUpload(id);
+        else cancelUpload(id);
       });
     });
 

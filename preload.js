@@ -18,7 +18,9 @@ contextBridge.exposeInMainWorld('api', {
   getStatus: () => ipcRenderer.invoke('drive:status'),
   onStatus: (cb) => ipcRenderer.on('drive:status', (e, data) => cb(data)),
   onUpdate: (cb) => ipcRenderer.on('drive:update', (e, data) => cb(data)),
-  onUploadProgress: (cb) => ipcRenderer.on('drive:uploadProgress', (e, data) => cb(data)),
+  // Full snapshot of every upload row on any change — simpler to keep correct
+  // than patching individual rows as they start, pause, fail, and resume.
+  onUploads: (cb) => ipcRenderer.on('drive:uploads', (e, data) => cb(data)),
   onUploadDone: (cb) => ipcRenderer.on('drive:uploadDone', (e, data) => cb(data)),
   onDownloadProgress: (cb) => ipcRenderer.on('drive:downloadProgress', (e, data) => cb(data)),
   onPreviewProgress: (cb) => ipcRenderer.on('drive:previewProgress', (e, data) => cb(data)),
@@ -32,6 +34,8 @@ contextBridge.exposeInMainWorld('api', {
   pickFiles: () => ipcRenderer.invoke('files:pickFiles'),
   upload: (paths, destFolder) => ipcRenderer.invoke('drive:upload', { paths, destFolder }),
   cancelUpload: (uploadId) => ipcRenderer.invoke('drive:cancelUpload', { uploadId }),
+  pauseUpload: (uploadId) => ipcRenderer.invoke('drive:pauseUpload', { uploadId }),
+  resumeUpload: (uploadId) => ipcRenderer.invoke('drive:resumeUpload', { uploadId }),
   download: (fileId, name) => ipcRenderer.invoke('drive:download', { fileId, name }),
   copyLink: (fileId) => ipcRenderer.invoke('drive:copyLink', { fileId }),
   previewFile: (fileId) => ipcRenderer.invoke('drive:preview', { fileId }),

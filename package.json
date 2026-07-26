@@ -29,7 +29,8 @@
       "icon.png",
       "renderer/**/*",
       "update-checker.js",
-      "upload-resume.js"
+      "upload-resume.js",
+      "upload-stats.js"
     ],
     "icon": "icon.png",
     "win": {
