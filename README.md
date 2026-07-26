@@ -117,7 +117,7 @@ without a Save As dialog:
   upload (folder structure is preserved); large uploads that hit Discord's
   size limit automatically retry at a smaller chunk size
 - **Uploads built for big files** — chunks upload several at a time
-  (configurable, default 5), every upload can be canceled from its progress
+  (configurable, default 4), every upload can be canceled from its progress
   row, and an upload interrupted by a network error resumes from the last
   chunk that made it instead of starting over
 - **In-app preview** — images, PDFs, video, audio, and text/code files open
@@ -203,6 +203,53 @@ BeanyDrive-*.AppImage`) and run it directly.
 | `Esc`     | Close settings / dialog / clear search / close preview |
 | `←` / `→` | Previous / next page (PDF preview open) |
 
+## Upload speed
+
+A file is uploaded as a series of chunks, each one a separate Discord
+message with an attachment. Two settings control how fast that goes, and
+only one of them is usually worth changing.
+
+### Parallel chunk uploads (default 4)
+
+How many chunks are in the air at the same time. Uploading them one after
+another leaves the connection idle between requests, so sending several at
+once is a genuine speed-up — that part is real and it's on by default.
+
+Raising it past 4 mostly isn't, for two reasons:
+
+- **Discord's rate limit.** A bot may create roughly **5 messages per 5
+  seconds per channel**. That's about one chunk per second no matter how
+  many workers you run — call it ~10 MB/s with 10 MB chunks. Extra workers
+  past that don't upload anything, they just sit waiting out `429`
+  responses. BeanyDrive honors the `retry_after` Discord sends back, so
+  nothing breaks; it simply doesn't get faster.
+- **Your upload bandwidth.** ~10 MB/s is about **80 Mbps of upstream**.
+  Most home connections are well below that, which means the rate limit was
+  never your ceiling — your uplink was, and no amount of parallelism moves
+  it.
+
+Set it to **1** if your connection is unstable and you'd rather not have
+several large POSTs competing; set it higher than 4 only if you're on a
+genuinely fast uplink and want to squeeze the rate limit.
+
+### Chunk size (default 10 MB) — the setting that actually matters
+
+10 MB is Discord's per-attachment limit for a **non-boosted** server. Boost
+the server and that limit rises, which is the one change that moves the
+ceiling instead of nudging it:
+
+| Server boost level | Max attachment | Chunks for a 4 GB ISO |
+| ------------------ | -------------- | --------------------- |
+| None / Level 1     | 10 MB          | ~410                  |
+| Level 2            | 50 MB          | ~82                   |
+| Level 3            | 100 MB         | ~41                   |
+
+Fewer, larger chunks means fewer messages, which means the 5-per-5-seconds
+limit stops binding entirely. BeanyDrive detects your server's tier on
+connect and caps the chunk size to whatever it actually allows, so raising
+this above your server's limit is harmless — it just gets clamped back
+down. If your server is boosted, raise it; that's where the real gain is.
+
 ## Notes
 
 - **Chunk size**: configurable in Settings (default 10 MB), but the
@@ -211,10 +258,8 @@ BeanyDrive-*.AppImage`) and run it directly.
   original bot did. If Discord ever rejects a chunk as too large mid-upload,
   BeanyDrive halves the chunk size and retries automatically.
 - **Parallel uploads**: how many chunks are sent at once is configurable in
-  Settings (default 5, max 8). Discord allows roughly 5 message creates per
-  5 seconds per channel, so past that the extra workers just sit in rate-limit
-  backoff; your own upstream bandwidth is usually the real ceiling anyway. Set
-  it to 1 if your connection can't keep several 10 MB POSTs alive at once.
+  Settings (default 4, max 8) — see [Upload speed](#upload-speed) for what to
+  actually set it to.
 - **Resuming**: when an upload dies partway (network drop, closed app), the
   chunks that made it are deliberately left in the channel and recorded in
   `uploads-resume.json` beside the config. Re-uploading the same file to the

@@ -35,7 +35,7 @@ function writeConfig(cfg) {
 // connections.
 function clampConcurrency(value) {
   const n = Number(value);
-  if (!Number.isFinite(n)) return 5;
+  if (!Number.isFinite(n)) return 4;
   return Math.max(1, Math.min(8, Math.round(n)));
 }
 

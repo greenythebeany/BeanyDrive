@@ -255,7 +255,9 @@ input::placeholder { color: var(--text-dimmer); }
 .settings-head .esc { color: var(--text-dim); cursor: pointer; padding: 2px 6px; }
 .settings-head .esc:hover { color: var(--text); }
 .settings-label { color: var(--text-dimmer); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px; }
-.settings-hint { color: var(--text-dimmer); font-size: 11px; margin-top: 6px; }
+.settings-hint { color: var(--text-dimmer); font-size: 11px; margin-top: 6px; line-height: 1.5; }
+.settings-link { color: var(--accent); cursor: pointer; white-space: nowrap; }
+.settings-link:hover { text-decoration: underline; }
 .settings-input {
   background: var(--bg-app); border: 1px solid var(--border-mid); color: var(--text); font-size: 12px;
   padding: 7px 8px; font-family: inherit; margin-bottom: 8px; width: 100%; outline: none;

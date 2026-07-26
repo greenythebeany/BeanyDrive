@@ -7,6 +7,10 @@
   document.getElementById('btn-max').addEventListener('click', () => window.api.maximize());
   document.getElementById('btn-close').addEventListener('click', () => window.api.close());
 
+  // Opens in the user's browser via the main process — the README section
+  // explaining why more parallel chunks isn't automatically faster.
+  const UPLOAD_SPEED_DOCS = 'https://github.com/greenythebeany/BeanyDrive#upload-speed';
+
   const TAGS = {
     design: { name: 'design', color: '#5c9eff' },
     work: { name: 'work', color: '#5cd68a' },
@@ -192,7 +196,7 @@
     botTokenInput: '',
     channelIdInput: '',
     chunkSizeInput: 10,
-    concurrencyInput: 5,
+    concurrencyInput: 4,
     testResult: null,
 
     emptyTrashOpen: false,
@@ -288,7 +292,7 @@
     state.settings = await window.api.getSettings();
     state.channelIdInput = state.settings.channelId;
     state.chunkSizeInput = state.settings.chunkSizeMb;
-    state.concurrencyInput = state.settings.uploadConcurrency || 5;
+    state.concurrencyInput = state.settings.uploadConcurrency || 4;
     applyStatusSnapshot(await window.api.getStatus());
     applyThemeVars();
     render();
@@ -333,7 +337,7 @@
       state.botTokenInput = '';
       state.channelIdInput = state.settings.channelId;
       state.chunkSizeInput = state.settings.chunkSizeMb;
-      state.concurrencyInput = state.settings.uploadConcurrency || 5;
+      state.concurrencyInput = state.settings.uploadConcurrency || 4;
       state.testResult = null;
     }
     render();
@@ -701,7 +705,7 @@
     const token = state.botTokenInput.trim() || undefined;
     const channelId = state.channelIdInput.trim();
     const chunkSizeMb = Number(state.chunkSizeInput) || 10;
-    const uploadConcurrency = Number(state.concurrencyInput) || 5;
+    const uploadConcurrency = Number(state.concurrencyInput) || 4;
     window.api.saveSettings({ token, channelId, chunkSizeMb, uploadConcurrency }).then((res) => {
       state.settings = res.settings;
       state.botTokenInput = '';
@@ -967,7 +971,11 @@
             <input class="settings-input stepper-input" id="conc-input" type="number" min="1" max="8" value="${esc(String(state.concurrencyInput))}">
             <div class="icon-btn stepper-btn" id="conc-increment">+</div>
           </div>
-          <div class="settings-hint">Higher is faster for big files; drop to 1 on a flaky connection.</div>
+          <div class="settings-hint">
+            Several chunks at once instead of one after another. Past 4, Discord's
+            rate limit usually caps you anyway.
+            <span class="settings-link" id="upload-docs-link">What does this do? ↗</span>
+          </div>
         </div>
 
         <div class="settings-row-inline">
@@ -1311,6 +1319,8 @@
     if (concDec) concDec.addEventListener('click', () => stepConcurrency(-1));
     const concInc = document.getElementById('conc-increment');
     if (concInc) concInc.addEventListener('click', () => stepConcurrency(1));
+    const uploadDocsLink = document.getElementById('upload-docs-link');
+    if (uploadDocsLink) uploadDocsLink.addEventListener('click', () => window.api.openExternal(UPLOAD_SPEED_DOCS));
     const testBtn = document.getElementById('test-connection-btn');
     if (testBtn) testBtn.addEventListener('click', testConnectionAction);
     const saveBtn = document.getElementById('settings-save-btn');
