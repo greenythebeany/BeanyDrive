@@ -1204,8 +1204,10 @@
         e.preventDefault();
         dragCounter = 0;
         listPane.classList.remove('drag-over');
-        const paths = Array.from(e.dataTransfer.files).map((f) => f.path).filter(Boolean);
+        const dropped = Array.from(e.dataTransfer.files);
+        const paths = dropped.map((f) => window.api.pathForFile(f)).filter(Boolean);
         if (paths.length) startUpload(paths);
+        else if (dropped.length) showToast('Could not resolve the dropped file(s) on disk');
       });
     }
 
@@ -1299,8 +1301,10 @@
   // file input (static element, wired once)
   const fileInput = document.getElementById('file-input');
   fileInput.addEventListener('change', (e) => {
-    const paths = Array.from(e.target.files).map((f) => f.path).filter(Boolean);
+    const picked = Array.from(e.target.files);
+    const paths = picked.map((f) => window.api.pathForFile(f)).filter(Boolean);
     if (paths.length) startUpload(paths);
+    else if (picked.length) showToast('Could not resolve the selected file(s) on disk');
     e.target.value = '';
   });
 

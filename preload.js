@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
   minimize: () => ipcRenderer.send('window:minimize'),
@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld('api', {
   onUploadDone: (cb) => ipcRenderer.on('drive:uploadDone', (e, data) => cb(data)),
   onDownloadProgress: (cb) => ipcRenderer.on('drive:downloadProgress', (e, data) => cb(data)),
   onPreviewProgress: (cb) => ipcRenderer.on('drive:previewProgress', (e, data) => cb(data)),
+
+  // Electron 32 dropped the File.path augmentation the renderer used to read
+  // off dropped/picked files; webUtils.getPathForFile is the replacement.
+  pathForFile: (file) => {
+    try { return webUtils.getPathForFile(file) || ''; } catch (e) { return ''; }
+  },
 
   pickFiles: () => ipcRenderer.invoke('files:pickFiles'),
   upload: (paths, destFolder) => ipcRenderer.invoke('drive:upload', { paths, destFolder }),
