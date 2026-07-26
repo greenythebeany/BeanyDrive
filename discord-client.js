@@ -18,7 +18,9 @@ const { resumeKey } = require('./upload-resume');
 
 const API_BASE = 'https://discord.com/api/v10';
 const SAFETY_BYTES = 256 * 1024;
-const DEFAULT_CONCURRENCY = 4;
+// 5 matches Discord's per-channel allowance of 5 message creates per 5s, so
+// the pool stays saturated without spending most of its time in 429 backoff.
+const DEFAULT_CONCURRENCY = 5;
 // Unfinished uploads older than this are given up on: their chunks are deleted
 // and the resume record dropped, so abandoned attempts can't accumulate in the
 // channel forever.

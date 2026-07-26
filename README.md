@@ -117,7 +117,7 @@ without a Save As dialog:
   upload (folder structure is preserved); large uploads that hit Discord's
   size limit automatically retry at a smaller chunk size
 - **Uploads built for big files** — chunks upload several at a time
-  (configurable, default 4), every upload can be canceled from its progress
+  (configurable, default 5), every upload can be canceled from its progress
   row, and an upload interrupted by a network error resumes from the last
   chunk that made it instead of starting over
 - **In-app preview** — images, PDFs, video, audio, and text/code files open
@@ -211,9 +211,10 @@ BeanyDrive-*.AppImage`) and run it directly.
   original bot did. If Discord ever rejects a chunk as too large mid-upload,
   BeanyDrive halves the chunk size and retries automatically.
 - **Parallel uploads**: how many chunks are sent at once is configurable in
-  Settings (default 4, max 8). Discord's per-channel rate limit is the real
-  ceiling, so past a handful there's nothing to gain; set it to 1 if your
-  connection can't keep several 10 MB POSTs alive at once.
+  Settings (default 5, max 8). Discord allows roughly 5 message creates per
+  5 seconds per channel, so past that the extra workers just sit in rate-limit
+  backoff; your own upstream bandwidth is usually the real ceiling anyway. Set
+  it to 1 if your connection can't keep several 10 MB POSTs alive at once.
 - **Resuming**: when an upload dies partway (network drop, closed app), the
   chunks that made it are deliberately left in the channel and recorded in
   `uploads-resume.json` beside the config. Re-uploading the same file to the

@@ -192,7 +192,7 @@
     botTokenInput: '',
     channelIdInput: '',
     chunkSizeInput: 10,
-    concurrencyInput: 4,
+    concurrencyInput: 5,
     testResult: null,
 
     emptyTrashOpen: false,
@@ -288,7 +288,7 @@
     state.settings = await window.api.getSettings();
     state.channelIdInput = state.settings.channelId;
     state.chunkSizeInput = state.settings.chunkSizeMb;
-    state.concurrencyInput = state.settings.uploadConcurrency || 4;
+    state.concurrencyInput = state.settings.uploadConcurrency || 5;
     applyStatusSnapshot(await window.api.getStatus());
     applyThemeVars();
     render();
@@ -333,7 +333,7 @@
       state.botTokenInput = '';
       state.channelIdInput = state.settings.channelId;
       state.chunkSizeInput = state.settings.chunkSizeMb;
-      state.concurrencyInput = state.settings.uploadConcurrency || 4;
+      state.concurrencyInput = state.settings.uploadConcurrency || 5;
       state.testResult = null;
     }
     render();
@@ -701,7 +701,7 @@
     const token = state.botTokenInput.trim() || undefined;
     const channelId = state.channelIdInput.trim();
     const chunkSizeMb = Number(state.chunkSizeInput) || 10;
-    const uploadConcurrency = Number(state.concurrencyInput) || 4;
+    const uploadConcurrency = Number(state.concurrencyInput) || 5;
     window.api.saveSettings({ token, channelId, chunkSizeMb, uploadConcurrency }).then((res) => {
       state.settings = res.settings;
       state.botTokenInput = '';
