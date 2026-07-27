@@ -90,6 +90,8 @@ const MIME_TYPES = {
   py: 'text/plain', js: 'text/plain', ts: 'text/plain', java: 'text/plain', c: 'text/plain', cpp: 'text/plain',
   html: 'text/plain', css: 'text/plain', json: 'text/plain', xml: 'text/plain', yaml: 'text/plain', yml: 'text/plain',
   sh: 'text/plain', sql: 'text/plain', csv: 'text/plain',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 };
 
 function guessMime(filename) {

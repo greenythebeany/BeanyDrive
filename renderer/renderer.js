@@ -73,7 +73,10 @@
   ];
   // Categories the in-app preview overlay knows how to render. Everything
   // else (office docs, archives) still only offers Download.
-  const PREVIEWABLE = new Set(['image', 'pdf', 'text', 'code', 'video', 'audio']);
+  // 'word' and 'ppt' also cover legacy/OpenDocument extensions that ooxml.js
+  // can't read; those open the preview and explain why rather than being
+  // silently unclickable.
+  const PREVIEWABLE = new Set(['image', 'pdf', 'text', 'code', 'video', 'audio', 'word', 'ppt']);
 
   // User-created tags, layered on top of the built-in TAGS map (design/work/
   // personal) and persisted locally — there's no server-side tag registry,
@@ -511,10 +514,14 @@
     pdfPreviewToken += 1;
     const token = pdfPreviewToken;
     if (state.previewOverlay && state.previewOverlay.blobUrl) URL.revokeObjectURL(state.previewOverlay.blobUrl);
+    if (state.previewOverlay && state.previewOverlay.objectUrls) {
+      state.previewOverlay.objectUrls.forEach((u) => URL.revokeObjectURL(u));
+    }
     state.previewOverlay = {
       fileId: f.id, name: f.name, category: categoryFor(f.name),
       loading: true, progress: 0, error: null, blobUrl: null, textContent: null,
       pdfDoc: null, pdfPage: 1, pdfPageCount: 0,
+      officeHtml: null, officeSummary: null, objectUrls: [],
     };
     renderPreviewOverlay();
 
@@ -548,6 +555,26 @@
           if (token !== pdfPreviewToken) return;
           state.previewOverlay.loading = false;
           state.previewOverlay.error = `Couldn't render PDF: ${err.message}`;
+          renderPreviewOverlay();
+        }
+      } else if (cat === 'word' || cat === 'ppt') {
+        try {
+          const buf = await blob.arrayBuffer();
+          if (token !== pdfPreviewToken) return;
+          const rendered = await window.ooxml.renderOffice(buf, state.previewOverlay.name);
+          if (token !== pdfPreviewToken) {
+            rendered.objectUrls.forEach((u) => URL.revokeObjectURL(u));
+            return;
+          }
+          state.previewOverlay.officeHtml = rendered.html;
+          state.previewOverlay.officeSummary = rendered.summary;
+          state.previewOverlay.objectUrls = rendered.objectUrls;
+          state.previewOverlay.loading = false;
+          renderPreviewOverlay();
+        } catch (err) {
+          if (token !== pdfPreviewToken) return;
+          state.previewOverlay.loading = false;
+          state.previewOverlay.error = err.message || String(err);
           renderPreviewOverlay();
         }
       } else {
@@ -595,6 +622,10 @@
   function closePreviewOverlay() {
     pdfPreviewToken += 1; // invalidates any in-flight load/render for the closed preview
     if (state.previewOverlay && state.previewOverlay.blobUrl) URL.revokeObjectURL(state.previewOverlay.blobUrl);
+    // Every image pulled out of a Word/PowerPoint file is its own blob.
+    if (state.previewOverlay && state.previewOverlay.objectUrls) {
+      state.previewOverlay.objectUrls.forEach((u) => URL.revokeObjectURL(u));
+    }
     state.previewOverlay = null;
     renderPreviewOverlay();
   }
@@ -615,6 +646,9 @@
       body = `<pre class="preview-text">${esc(p.textContent || '')}</pre>`;
     } else if (p.category === 'pdf') {
       body = '<div class="preview-pdf-wrap"><canvas id="pdf-canvas"></canvas></div>';
+    } else if (p.officeHtml) {
+      // Built by ooxml.js, which escapes every value taken from the document.
+      body = `<div class="preview-office">${p.officeHtml}</div>`;
     } else {
       body = '<div class="preview-status">No preview available</div>';
     }
@@ -628,7 +662,7 @@
       <div class="modal-overlay preview-overlay" id="preview-overlay">
         <div class="preview-box">
           <div class="preview-head">
-            <span class="title">${esc(p.name)}</span>
+            <span class="title">${esc(p.name)}${p.officeSummary ? ` <span class="preview-sub">${esc(p.officeSummary)}</span>` : ''}</span>
             ${pager}
             <span class="esc" id="preview-close">Esc</span>
           </div>
@@ -637,10 +671,31 @@
       </div>`;
   }
 
+  // Slides are laid out at a fixed 960px and scaled to whatever the preview
+  // pane actually is. transform doesn't affect layout, so the wrapper gets the
+  // scaled size explicitly or the slides would overlap.
+  function fitOfficeSlides() {
+    const pane = previewRoot.querySelector('.preview-office');
+    if (!pane) return;
+    const available = pane.clientWidth - 48;
+    if (available <= 0) return;
+    previewRoot.querySelectorAll('.ooxml-slide').forEach((slide) => {
+      const w = parseFloat(slide.style.width) || 960;
+      const h = parseFloat(slide.style.height) || 540;
+      const scale = Math.min(1, available / w);
+      slide.style.transform = `scale(${scale})`;
+      const wrap = slide.parentElement;
+      wrap.style.width = `${Math.round(w * scale)}px`;
+      wrap.style.height = `${Math.round(h * scale) + 18}px`;
+    });
+  }
+  window.addEventListener('resize', fitOfficeSlides);
+
   function renderPreviewOverlay() {
     const p = state.previewOverlay;
     if (!p) { previewRoot.innerHTML = ''; return; }
     previewRoot.innerHTML = buildPreviewOverlayHtml(p);
+    fitOfficeSlides();
     const overlay = document.getElementById('preview-overlay');
     overlay.addEventListener('click', (e) => { if (e.target.id === 'preview-overlay') closePreviewOverlay(); });
     document.getElementById('preview-close').addEventListener('click', closePreviewOverlay);
@@ -997,7 +1052,7 @@
     const previewTexts = {
       image: '[ image preview ]', text: '[ text preview ]', pdf: '[ pdf preview ]',
       video: '[ video — no inline playback ]', audio: '[ audio file ]', sheet: '[ spreadsheet — no inline preview ]',
-      archive: '[ archive — no preview available ]', word: '[ document — no inline preview ]', ppt: '[ slides — no inline preview ]',
+      archive: '[ archive — no preview available ]', word: '[ document preview ]', ppt: '[ slide preview ]',
       code: '[ code file ]', other: '[ no preview available ]',
     };
     const parentLabel = selFile.path ? `My Drive / ${selFile.path.split('/').join(' / ')}` : 'My Drive';

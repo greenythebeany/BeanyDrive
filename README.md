@@ -125,6 +125,11 @@ without a Save As dialog:
   Explorer or Finder. Files live on Discord, so the first drag fetches a local
   copy (with progress) and the drag itself works from then on; a ⇱ next to the
   name marks the ones that are ready
+- **Word & PowerPoint preview** — `.docx` opens as a readable document
+  (headings, bold/italic, colours, lists, tables, inline images) and `.pptx`
+  as its slides, each shape placed where the deck puts it. Read directly from
+  the file's XML, no external converter — see [Office preview](#office-preview)
+  for what is and isn't reproduced
 - **In-app preview** — images, PDFs, video, audio, and text/code files open
   in a full-window preview (`Preview` button, or `p`) without a Save As
   dialog; the file is reassembled in memory over Discord's REST API and
@@ -254,6 +259,35 @@ limit stops binding entirely. BeanyDrive detects your server's tier on
 connect and caps the chunk size to whatever it actually allows, so raising
 this above your server's limit is harmless — it just gets clamped back
 down. If your server is boosted, raise it; that's where the real gain is.
+
+## Office preview
+
+`.docx` and `.pptx` are ZIP archives full of XML, and Chromium can already
+unzip (`DecompressionStream`) and parse XML (`DOMParser`) — so BeanyDrive reads
+them directly in `renderer/ooxml.js` rather than shipping another renderer
+alongside pdf.js. Nothing is uploaded anywhere to convert it.
+
+**What you get.** Word documents render as a readable document: headings,
+bold/italic/underline/strikethrough, text colour and size, lists, tables, and
+inline images. PowerPoint renders each slide at its true aspect ratio with every
+text box and picture positioned where the deck puts it, scaled to fit the window.
+
+**What isn't reproduced.** This is a reading view, not a rendering engine:
+
+- **Word**: no page breaks, headers/footers, footnotes, comments, tracked
+  changes, columns, or exact fonts and margins. List numbering shows as bullets.
+- **PowerPoint**: no slide master/layout backgrounds, themes, tables, charts,
+  SmartArt, WordArt effects, transitions, animations, or speaker notes. Text is
+  positioned by its shape box, so heavy custom spacing can sit differently.
+- **Vector images** (EMF/WMF) inside either format are skipped — browsers can't
+  display them.
+- Only the modern zipped formats work. Legacy `.doc`/`.ppt` (Word/PowerPoint
+  97–2003) and OpenDocument `.odt`/`.odp` are different formats entirely; those
+  say so plainly rather than failing with a parse error.
+
+Everything drawn from a document is escaped as text, and the only URLs the
+preview emits are `blob:` URLs it created for embedded images — a document can't
+inject markup, scripts, or outbound requests into the app.
 
 ## Notes
 
