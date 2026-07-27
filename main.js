@@ -435,10 +435,7 @@ const dragPreparing = new Set();
 
 async function pushDragCache() {
   if (!dragCache) return;
-  const onDisk = new Set((await dragCache.list()).map((e) => e.name));
-  const ready = drive.metadata.files
-    .filter((f) => onDisk.has(path.basename(dragCache.pathFor(f.id, f.name))))
-    .map((f) => f.id);
+  const ready = (await dragCache.list()).map((e) => e.fileId);
   send('drive:dragCache', { ready, preparing: [...dragPreparing] });
 }
 
