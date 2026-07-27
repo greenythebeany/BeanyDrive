@@ -1,7 +1,7 @@
 {
   "name": "beanydrive",
   "productName": "BeanyDrive",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "GreenyBeany's terminal-styled desktop client for Discord-backed cloud storage",
   "main": "main.js",
   "private": true,

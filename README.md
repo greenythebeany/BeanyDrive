@@ -345,11 +345,11 @@ inject markup, scripts, or outbound requests into the app.
 - **Preview**: only categories the app knows how to render get a `Preview`
   button — images, PDF (via a vendored [pdf.js](https://mozilla.github.io/pdf.js/)
   build, [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0)), video,
-  audio, and text/code. Office docs, spreadsheets, and archives still only
-  offer Download. Anything over 50 MB is rejected with a message telling
-  you to download instead — previewing still means pulling every chunk over
-  the network first, same as a download, just held in memory instead of
-  written to disk.
+  audio, text/code, and Word/PowerPoint (see [Office preview](#office-preview)).
+  Spreadsheets and archives still only offer Download. Anything over 500 MB is
+  rejected with a message telling you to download instead — previewing still
+  means pulling every chunk over the network first, same as a download, just
+  held in memory instead of written to disk.
 - **Why `app://` instead of loading `index.html` straight off disk**:
   Chromium treats plain `file://` pages as an opaque origin, which silently
   breaks ES module workers — exactly what the PDF preview needs. BeanyDrive
