@@ -5,3 +5,8 @@ drive-config.json
 .DS_Store
 npm-debug.log*
 *.log
+
+# mobile: generated web bundle and the native project Capacitor scaffolds
+mobile/www/
+mobile/android/
+mobile/ios/

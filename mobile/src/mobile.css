@@ -1,0 +1,40 @@
+/* Android-only overrides on top of the shared renderer/style.css.
+   Deliberately small: this hides the Electron window chrome and makes the
+   desktop three-pane layout survive a phone. A proper mobile layout pass is
+   still owed — this is the minimum that makes the build usable. */
+
+/* The frameless titlebar is Electron chrome; `hidden` alone loses to the
+   stylesheet's display:flex. */
+.titlebar[hidden] { display: none !important; }
+
+/* Status bar / notch. */
+.root { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+
+@media (max-width: 820px) {
+  /* `.main` is the row that holds sidebar / list / detail — `.root` is already
+     a column of statusbar, main, statusbar. Stack the panes instead, and give
+     the file list whatever the other two don't take, otherwise the sidebar's
+     full-height rules push the list clean off the screen. */
+  .main { flex-direction: column; min-height: 0; }
+  .sidebar {
+    width: 100%; max-width: none; height: auto; flex: 0 0 auto; max-height: 30vh;
+    flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 4px;
+    overflow-x: auto; overflow-y: hidden;
+    border-right: none; border-bottom: 1px solid var(--border-dim);
+  }
+  /* The sidebar's section headings are dead weight in a horizontal strip. */
+  .sidebar .nav-section-label { display: none; }
+  .sidebar .nav-item { white-space: nowrap; }
+
+  .list-pane { flex: 1 1 auto; min-height: 0; }
+
+  .detail-pane {
+    width: 100%; max-width: none; height: auto; flex: 0 0 auto; max-height: 40vh;
+    border-left: none; border-top: 1px solid var(--border-dim);
+  }
+  /* Touch targets: the desktop rows are sized for a mouse. */
+  .file-row { padding-top: 12px; padding-bottom: 12px; }
+  .upload-btn, .icon-btn { padding: 8px 10px; }
+  /* Keyboard hints are meaningless without a keyboard. */
+  .hint, .hints { display: none; }
+}

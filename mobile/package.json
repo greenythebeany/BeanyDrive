@@ -1,0 +1,24 @@
+{
+  "name": "beanydrive-mobile",
+  "version": "1.0.3",
+  "private": true,
+  "description": "Android build of BeanyDrive, sharing core/ with the desktop app",
+  "scripts": {
+    "build": "node build.mjs",
+    "sync": "npm run build && cap sync android",
+    "open": "cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/app": "^8.0.1",
+    "@capacitor/browser": "^8.0.1",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/share": "^8.0.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
+    "esbuild": "^0.25.0"
+  }
+}
