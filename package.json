@@ -24,6 +24,8 @@
       "main.js",
       "preload.js",
       "discord-client.js",
+      "core/**/*",
+      "platform/**/*",
       "drive-config.js",
       "util.js",
       "icon.png",

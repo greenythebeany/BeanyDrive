@@ -29,28 +29,9 @@ function createTokenStore(filePath) {
 }
 
 // Mirrors storage.py's path/category helpers from the original DiscordCloudStorage bot.
-
-function normalizePath(path) {
-  if (!path) return '';
-  const p = String(path).replace(/\\/g, '/');
-  return p.split('/').filter((seg) => seg && seg !== '.').join('/');
-}
-
-function joinPath(...parts) {
-  return normalizePath(parts.filter(Boolean).join('/'));
-}
-
-function parentOf(path) {
-  path = normalizePath(path);
-  if (!path.includes('/')) return '';
-  return path.slice(0, path.lastIndexOf('/'));
-}
-
-function basenameOf(path) {
-  path = normalizePath(path);
-  if (!path.includes('/')) return path;
-  return path.slice(path.lastIndexOf('/') + 1);
-}
+// The path helpers themselves live in core/paths.js, shared with the Capacitor
+// build; re-exported here so existing importers of util.js keep working.
+const { normalizePath, joinPath, parentOf, basenameOf } = require('./core/paths');
 
 function humanSize(bytes) {
   if (bytes == null) return '';
