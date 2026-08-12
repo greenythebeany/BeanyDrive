@@ -2,17 +2,21 @@
 
 // The transport the core uses on Android.
 //
-// The WebView's own fetch can't be used against Discord: the page is served
-// from Capacitor's local scheme, so every API call is a cross-origin request
-// subject to CORS, and Discord doesn't grant it. CapacitorHttp performs the
-// request in native code instead, where CORS doesn't apply.
+// Discord's CORS policy is asymmetric, which decides the whole design here.
+// Measured from a browser origin:
 //
-// The catch is the bridge: on Android, request and response bodies cross it as
-// strings, so binary has to be base64 and a 10 MB chunk becomes a ~13.3 MB
-// string in each direction. That's tolerable for the API calls and metadata
-// this file handles, and it is NOT how chunk uploads should be done — those
-// belong in a native plugin that never puts the payload on the bridge. This
-// adapter exposes only what browsing and downloading need.
+//   GET                      allowed
+//   GET + Authorization      allowed (preflight passes)
+//   POST/DELETE + Auth       BLOCKED (preflight fails)
+//
+// So reads — metadata, message lookups, CDN chunk downloads — go through the
+// WebView's own fetch, which gives real binary and real streaming with nothing
+// crossing the JS bridge. Only writes need the native path, where the body has
+// to be base64 because Android's bridge carries strings.
+//
+// This split is also why CapacitorHttp must NOT be enabled globally in
+// capacitor.config.json: that patches window.fetch to route everything through
+// native, which would drag reads back onto the bridge and re-break binary.
 
 const { CapacitorHttp } = require('@capacitor/core');
 
@@ -23,19 +27,24 @@ function base64ToBytes(b64) {
   return out;
 }
 
+function bytesToBase64(bytes) {
+  let binary = '';
+  const step = 0x8000; // chunked to stay under the argument limit
+  for (let i = 0; i < bytes.length; i += step) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+  }
+  return btoa(binary);
+}
+
 // A fetch-shaped wrapper over the native response, so core/discord-api.js can't
-// tell the difference. Only the parts the core actually calls are implemented.
+// tell which path a request took. Only what the core calls is implemented.
 function toResponse(native) {
   const headers = new Map(
     Object.entries(native.headers || {}).map(([k, v]) => [String(k).toLowerCase(), v])
   );
   const status = native.status;
   const data = native.data;
-
-  const asText = () => {
-    if (data == null) return '';
-    return typeof data === 'string' ? data : JSON.stringify(data);
-  };
+  const asText = () => (data == null ? '' : (typeof data === 'string' ? data : JSON.stringify(data)));
 
   return {
     status,
@@ -43,58 +52,62 @@ function toResponse(native) {
     headers: { get: (name) => headers.get(String(name).toLowerCase()) || null },
     text: async () => asText(),
     json: async () => (typeof data === 'string' ? JSON.parse(data) : data),
-    arrayBuffer: async () => {
-      // responseType 'arraybuffer' comes back base64-encoded across the bridge.
-      const bytes = typeof data === 'string' ? base64ToBytes(data) : new Uint8Array(data || []);
-      return bytes.buffer;
-    },
+    arrayBuffer: async () => base64ToBytes(asText()).buffer,
   };
 }
 
-// FormData can't cross the bridge, so the one multipart caller in the core
-// (metadata save) is handled by serialising it here. Chunk uploads must not go
-// through this path — see the note at the top.
+// FormData can't cross the bridge, so it's serialised here — exactly as fetch
+// would, via Response, which also produces the matching multipart boundary.
 async function serializeBody(body) {
-  if (body == null) return { data: undefined, headers: {} };
-  if (typeof body === 'string') return { data: body, headers: {} };
+  if (body == null) return {};
+  if (typeof body === 'string') return { data: body };
   if (typeof FormData !== 'undefined' && body instanceof FormData) {
     const serialized = new Response(body);
     const contentType = serialized.headers.get('content-type');
-    const buf = new Uint8Array(await serialized.arrayBuffer());
-    let binary = '';
-    for (let i = 0; i < buf.length; i++) binary += String.fromCharCode(buf[i]);
-    return {
-      data: btoa(binary),
-      headers: { 'Content-Type': contentType },
-      dataType: 'file',
-    };
+    const bytes = new Uint8Array(await serialized.arrayBuffer());
+    return { data: bytesToBase64(bytes), headers: { 'Content-Type': contentType }, dataType: 'file' };
   }
   throw new Error('Unsupported request body for the native transport');
 }
 
-// Drop-in for global fetch, limited to what the core asks of it.
-async function nativeFetch(url, opts = {}) {
-  const { data, headers: bodyHeaders, dataType } = await serializeBody(opts.body);
-  const isBinary = /\/attachments\//.test(url) || /cdn\.discordapp\.com/.test(url);
-
-  if (opts.signal && opts.signal.aborted) {
-    const err = new Error('The operation was aborted');
-    err.name = 'AbortError';
-    throw err;
-  }
-
-  const native = await CapacitorHttp.request({
-    url,
-    method: opts.method || 'GET',
-    headers: Object.assign({}, opts.headers || {}, bodyHeaders || {}),
-    data,
-    dataType,
-    responseType: isBinary ? 'arraybuffer' : 'text',
-    connectTimeout: 30000,
-    readTimeout: 120000,
-  });
-
-  return toResponse(native);
+function abortError() {
+  const err = new Error('The operation was aborted');
+  err.name = 'AbortError';
+  return err;
 }
 
-module.exports = { nativeFetch, base64ToBytes };
+// Drop-in for global fetch, routing by method per the CORS table above.
+async function nativeFetch(url, opts = {}) {
+  const method = (opts.method || 'GET').toUpperCase();
+
+  if (method === 'GET') {
+    // Straight through the WebView: real binary, no base64, no bridge.
+    return fetch(url, opts);
+  }
+
+  if (opts.signal && opts.signal.aborted) throw abortError();
+
+  const serialized = await serializeBody(opts.body);
+  const request = CapacitorHttp.request({
+    url,
+    method,
+    headers: Object.assign({}, opts.headers || {}, serialized.headers || {}),
+    data: serialized.data,
+    dataType: serialized.dataType,
+    responseType: 'text',
+    connectTimeout: 30000,
+    readTimeout: 180000, // a 10 MB chunk on a phone connection
+  });
+
+  // CapacitorHttp has no cancellation of its own, so an abort stops the caller
+  // waiting; the request itself finishes in the background. That's enough for
+  // pause/cancel to feel immediate, and the chunk it was sending is either
+  // recorded by the retry or cleaned up as an orphan.
+  if (!opts.signal) return toResponse(await request);
+  return toResponse(await Promise.race([
+    request,
+    new Promise((_, reject) => opts.signal.addEventListener('abort', () => reject(abortError()), { once: true })),
+  ]));
+}
+
+module.exports = { nativeFetch, base64ToBytes, bytesToBase64 };

@@ -57,6 +57,13 @@ body.nav-open #m-scrim { opacity: 1; pointer-events: auto; }
     border-top: 1px solid var(--border);
   }
 
+  /* The toolbar is one non-wrapping row of six controls on desktop; at 375px
+     that squeezes the search field down to a sliver, which reads as "there is
+     no search". Give it its own full-width line and let the buttons wrap. */
+  .toolbar-row { flex-wrap: wrap; row-gap: 8px; }
+  .search-input { flex: 1 0 100%; padding: 10px 10px; font-size: 13px; }
+  .sort-select { padding: 9px 6px; font-size: 12px; }
+
   .file-row { padding-top: 12px; padding-bottom: 12px; }
   .icon-btn { padding: 9px 11px; }
   .act-btn { padding: 11px 12px; }

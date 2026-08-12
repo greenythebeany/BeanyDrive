@@ -3,11 +3,8 @@
   "appName": "BeanyDrive",
   "webDir": "www",
   "android": {
-    "allowMixedContent": false
+    "allowMixedContent": false,
+    "webContentsDebuggingEnabled": true
   },
-  "plugins": {
-    "CapacitorHttp": {
-      "enabled": true
-    }
-  }
+  "plugins": {}
 }

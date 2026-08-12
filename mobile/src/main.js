@@ -15,7 +15,9 @@
 const { createApi } = require('../../core/discord-api');
 const { DiscordDrive } = require('../../core/drive');
 const { nativeFetch } = require('../../platform/capacitor-http');
-const { capacitorFiles } = require('../../platform/capacitor-files');
+const { capacitorFiles, registerFile, forgetFile } = require('../../platform/capacitor-files');
+const { createRateTracker } = require('../../upload-stats');
+const { isCancelError, isPauseError } = require('../../core/drive');
 const { createResumeStore } = require('../../platform/capacitor-resume-store');
 const { guessMimeFor } = require('./mime');
 require('./mobile-ui'); // app bar, drawer, back button — pure UI, no drive access
@@ -104,24 +106,121 @@ async function downloadToDevice(fileId, name) {
   const label = `Downloading ${name}`;
   emit('taskProgress', { taskId, label, progress: 0, detail: 'starting…' });
   try {
-    const target = await Filesystem.getUri({ directory: Directory.Documents, path: name })
-      .then((r) => r.uri)
-      .catch(() => name);
+    // Cache is always writable with no runtime permission, unlike Documents on
+    // scoped storage. The share sheet is then how the file reaches Downloads,
+    // Drive, or wherever the user actually wants it.
+    const target = { path: name, directory: Directory.Cache };
     await drive.download(fileId, target, (cur, total) => {
       emit('taskProgress', {
         taskId, label, progress: Math.round((cur / total) * 100), detail: `${cur}/${total} chunks`,
       });
     });
-    emit('taskDone', { taskId, ok: true, message: `Saved ${name}` });
+    const { uri } = await Filesystem.getUri(target);
+    emit('taskDone', { taskId, ok: true, message: `${name} ready — choose where to keep it` });
     try {
-      await Share.share({ title: name, url: target, dialogTitle: `Save or send ${name}` });
-    } catch (e) { /* user dismissed the sheet; the file is still saved */ }
-    return { ok: true, path: target };
+      await Share.share({ title: name, url: uri, dialogTitle: `Save or send ${name}` });
+    } catch (e) { /* sheet dismissed; the file is still in the app's cache */ }
+    return { ok: true, path: uri };
   } catch (err) {
     emit('taskDone', { taskId, ok: false, message: `Download failed: ${err.message}` });
     return { ok: false, error: err.message };
   }
 }
+
+// --- uploads --------------------------------------------------------------
+// Same job model as the desktop: a queue whose entries outlive their transfer
+// so a paused or failed one still has the state its Resume/Retry button needs.
+// The renderer is fed the same snapshot shape, so its rows work unchanged.
+let uploadSeq = 0;
+const uploadJobs = [];
+let pumping = false;
+let statsTimer = null;
+
+function jobSnapshot(job) {
+  return {
+    uploadId: job.uploadId,
+    name: job.name,
+    state: job.state,
+    progress: job.progress,
+    error: job.error || null,
+    bytesPerSec: job.rate.bytesPerSec(),
+    etaSeconds: job.rate.etaSeconds(job.totalBytes),
+  };
+}
+function pushUploads() { emit('uploads', uploadJobs.map(jobSnapshot)); }
+
+function startStatsTicker() {
+  if (statsTimer) return;
+  statsTimer = setInterval(() => {
+    if (uploadJobs.some((j) => j.state === 'running')) pushUploads();
+    else { clearInterval(statsTimer); statsTimer = null; }
+  }, 1000);
+}
+
+function removeJob(job) {
+  const idx = uploadJobs.indexOf(job);
+  if (idx !== -1) uploadJobs.splice(idx, 1);
+  forgetFile(job.handle);
+}
+
+async function runJob(job) {
+  job.state = 'running';
+  job.error = null;
+  job.paused = false;
+  job.canceled = false;
+  job.controller = new AbortController();
+  job.rate.reset();
+  startStatsTicker();
+  pushUploads();
+
+  const control = {
+    signal: job.controller.signal,
+    isCanceled: () => job.canceled,
+    isPaused: () => job.paused,
+  };
+  const onProgress = (cur, total) => {
+    job.progress = total ? Math.round((cur / total) * 100) : 0;
+    if (job.totalBytes && drive.chunkSize) {
+      job.rate.push(Math.min(job.totalBytes, cur * drive.chunkSize));
+    }
+    pushUploads();
+  };
+
+  try {
+    const stat = await capacitorFiles.stat(job.handle);
+    job.totalBytes = stat.size;
+    await drive.upload(job.handle, job.destFolder, onProgress, control);
+    removeJob(job);
+    emit('uploadDone', { uploadId: job.uploadId, name: job.name, ok: true });
+  } catch (err) {
+    if (isPauseError(err)) {
+      job.state = 'paused';
+    } else if (isCancelError(err)) {
+      removeJob(job);
+      emit('uploadDone', { uploadId: job.uploadId, name: job.name, ok: false, canceled: true });
+    } else {
+      job.state = 'failed';
+      job.error = err.message;
+      emit('uploadDone', { uploadId: job.uploadId, name: job.name, ok: false, error: err.message });
+    }
+  }
+  pushUploads();
+  pushUpdate();
+}
+
+async function pumpUploads() {
+  if (pumping) return;
+  pumping = true;
+  try {
+    for (;;) {
+      const job = uploadJobs.find((j) => j.state === 'queued');
+      if (!job) break;
+      await runJob(job);
+    }
+  } finally { pumping = false; }
+}
+
+const findJob = (uploadId) => uploadJobs.find((j) => j.uploadId === uploadId) || null;
 
 // Desktop-only capabilities. Answering plainly beats a silent no-op — the UI
 // surfaces these strings as toasts.
@@ -135,6 +234,23 @@ function guarded(fn) {
     return result;
   };
 }
+
+// Diagnostics hook. webContentsDebuggingEnabled means this app can be inspected
+// from chrome://inspect on a connected phone, and this is what makes that
+// useful. Deliberately excludes the token — everything here is safe to read out
+// of a bug report.
+window.beanydrive = {
+  files: capacitorFiles,
+  status: () => ({
+    status: drive.status,
+    channel: drive.channelName,
+    guild: drive.guildName,
+    files: drive.metadata.files.length,
+    chunkSize: drive.chunkSize,
+    concurrency: drive.uploadConcurrency,
+  }),
+  uploads: () => uploadJobs.map(jobSnapshot),
+};
 
 window.api = {
   // Window chrome doesn't exist here; the titlebar hides itself when these
@@ -190,13 +306,59 @@ window.api = {
   onTaskDone: (cb) => on('taskDone', cb),
   onDragCache: (cb) => on('dragCache', cb),
 
-  // Uploading needs the native chunk plugin; until that exists, say so.
-  pathForFile: () => '',
-  pickFiles: async () => [],
-  upload: NOT_YET('Uploading'),
-  cancelUpload: NOT_YET('Uploading'),
-  pauseUpload: NOT_YET('Uploading'),
-  resumeUpload: NOT_YET('Uploading'),
+  // The renderer's <input type="file"> gives real File objects; registering one
+  // returns the handle the core will use as its "path".
+  pathForFile: (file) => registerFile(file),
+  pickFiles: async () => [], // the file input is the picker on Android
+  upload: async (paths, destFolder) => {
+    await ready;
+    if (drive.status !== 'connected') return { ok: false, error: 'Not connected. Check Settings.' };
+    for (const handle of paths) {
+      let name = handle;
+      try { name = (await capacitorFiles.stat(handle)).name; } catch (e) { /* keep the handle */ }
+      uploadJobs.push({
+        uploadId: `u${Date.now()}_${uploadSeq++}`,
+        handle, destFolder, name,
+        state: 'queued', progress: 0, error: null, totalBytes: 0,
+        rate: createRateTracker(), controller: null, paused: false, canceled: false,
+      });
+    }
+    pushUploads();
+    pumpUploads();
+    return { ok: true };
+  },
+  pauseUpload: async ({ uploadId }) => {
+    const job = findJob(uploadId);
+    if (!job) return { ok: false, error: 'Upload already finished' };
+    if (job.state === 'running') { job.paused = true; job.controller.abort(); }
+    else if (job.state === 'queued') job.state = 'paused';
+    else return { ok: false, error: `Cannot pause a ${job.state} upload` };
+    pushUploads();
+    return { ok: true };
+  },
+  resumeUpload: async ({ uploadId }) => {
+    const job = findJob(uploadId);
+    if (!job) return { ok: false, error: 'Upload no longer queued' };
+    if (job.state !== 'paused' && job.state !== 'failed') {
+      return { ok: false, error: `Cannot resume a ${job.state} upload` };
+    }
+    job.state = 'queued';
+    job.error = null;
+    pushUploads();
+    pumpUploads();
+    return { ok: true };
+  },
+  cancelUpload: async ({ uploadId }) => {
+    const job = findJob(uploadId);
+    if (!job) return { ok: false, error: 'Upload already finished' };
+    if (job.state === 'running') { job.canceled = true; job.controller.abort(); return { ok: true }; }
+    // Paused/failed rows still own chunks in the channel.
+    await drive.discardResumable(job.handle, job.destFolder).catch(() => {});
+    removeJob(job);
+    emit('uploadDone', { uploadId, name: job.name, ok: false, canceled: true });
+    pushUploads();
+    return { ok: true };
+  },
   prepareDrag: NOT_YET('Drag-out'),
   startDrag() {},
 
