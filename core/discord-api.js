@@ -75,14 +75,18 @@ function createApi({ fetchImpl } = {}) {
 
   // Attachment downloads go straight to Discord's CDN, not the API — no bot
   // token, no rate-limit dance, but the same injected transport.
+  //
+  // `responseType` is stated rather than inferred: a transport that guesses
+  // binary-vs-text from the URL gets metadata wrong, since the metadata index
+  // is itself an attachment. Plain fetch ignores the extra init field.
   async function fetchBinary(url) {
-    const res = await doFetch(url);
+    const res = await doFetch(url, { responseType: 'arraybuffer' });
     if (!res.ok) throw new Error(`Attachment download failed (${res.status})`);
     return new Uint8Array(await res.arrayBuffer());
   }
 
   async function fetchText(url) {
-    const res = await doFetch(url);
+    const res = await doFetch(url, { responseType: 'text' });
     if (!res.ok) throw new Error(`Attachment download failed (${res.status})`);
     return res.text();
   }

@@ -21,20 +21,23 @@ mobile/src/main.js       android's main.js + preload.js
 
 Two measured facts shaped the adapters.
 
-**Discord's CORS policy is asymmetric.** Probed from a browser origin:
+**The WebView can't call Discord directly.** A desktop browser probe suggested
+`GET` with `Authorization` was permitted cross-origin, but the Android WebView
+is a different origin and the request fails there — the app reported a bare
+`TypeError: Failed to fetch` and couldn't connect. So the transport doesn't
+assume: it tries plain `fetch` first, falls back to CapacitorHttp when that
+throws, and remembers the answer per origin. If Discord's policy ever permits
+the WebView's origin, the fast path starts being used with no code change.
 
-| Request | Result |
-| --- | --- |
-| `GET` | allowed |
-| `GET` + `Authorization` | allowed (preflight passes) |
-| `POST` / `DELETE` + `Authorization` | blocked |
+The native path is where the JS bridge bites: bodies cross it as strings, so
+binary has to be base64. Response type is therefore **stated by the caller**
+(`fetchBinary` vs `fetchText`) rather than guessed from the URL — guessing is
+what broke metadata, since the metadata index is itself an attachment.
 
-So reads — metadata, message lookups, CDN chunk downloads — use the WebView's
-own `fetch`: real binary, real streaming, nothing on the JS bridge. Only writes
-go through CapacitorHttp, where the body must be base64 because the bridge
-carries strings. That's why `CapacitorHttp` is **not** enabled in
-`capacitor.config.json`: doing so patches `window.fetch` globally and would drag
-reads back onto the bridge.
+`CapacitorHttp` is deliberately **not** enabled in `capacitor.config.json`. That
+flag only patches `window.fetch` globally; the plugin is registered natively
+either way (`Bridge.java` registers it unconditionally), so the adapter can call
+it directly while leaving the WebView's own fetch untouched.
 
 **Files come from the picker as `File` objects, not paths.** `<input type=file>`
 in the WebView hands back a `File`, which is a `Blob`, and `Blob.slice()` is

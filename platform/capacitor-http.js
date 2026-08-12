@@ -76,17 +76,18 @@ function abortError() {
   return err;
 }
 
-// Drop-in for global fetch, routing by method per the CORS table above.
-async function nativeFetch(url, opts = {}) {
-  const method = (opts.method || 'GET').toUpperCase();
+// Whether plain fetch is usable, learned per origin rather than assumed. The
+// CORS table above was measured in a desktop browser; the WebView is a
+// different origin and can behave differently, so the first GET to a host
+// tries the fast path and the answer is remembered. A failure costs one
+// wasted request per host, once.
+const plainGetWorks = new Map();
 
-  if (method === 'GET') {
-    // Straight through the WebView: real binary, no base64, no bridge.
-    return fetch(url, opts);
-  }
+function originOf(url) {
+  try { return new URL(url).origin; } catch (e) { return String(url); }
+}
 
-  if (opts.signal && opts.signal.aborted) throw abortError();
-
+async function viaNative(url, opts, method) {
   const serialized = await serializeBody(opts.body);
   const request = CapacitorHttp.request({
     url,
@@ -94,7 +95,9 @@ async function nativeFetch(url, opts = {}) {
     headers: Object.assign({}, opts.headers || {}, serialized.headers || {}),
     data: serialized.data,
     dataType: serialized.dataType,
-    responseType: 'text',
+    // Binary is requested explicitly by the caller (fetchBinary), never guessed
+    // from the URL — guessing is what previously made metadata come back base64.
+    responseType: opts.responseType === 'arraybuffer' ? 'arraybuffer' : 'text',
     connectTimeout: 30000,
     readTimeout: 180000, // a 10 MB chunk on a phone connection
   });
@@ -108,6 +111,34 @@ async function nativeFetch(url, opts = {}) {
     request,
     new Promise((_, reject) => opts.signal.addEventListener('abort', () => reject(abortError()), { once: true })),
   ]));
+}
+
+// Drop-in for global fetch.
+async function nativeFetch(url, opts = {}) {
+  const method = (opts.method || 'GET').toUpperCase();
+  if (opts.signal && opts.signal.aborted) throw abortError();
+
+  if (method === 'GET' && plainGetWorks.get(originOf(url)) !== false) {
+    try {
+      const res = await fetch(url, opts);
+      plainGetWorks.set(originOf(url), true);
+      return res;
+    } catch (err) {
+      if (err && err.name === 'AbortError') throw err;
+      // A CORS refusal is indistinguishable from a network failure here — both
+      // are a bare TypeError. Either way the native path is worth trying, and
+      // if the network really is down it will fail too, with a better message.
+      plainGetWorks.set(originOf(url), false);
+    }
+  }
+
+  try {
+    return await viaNative(url, opts, method);
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw err;
+    const host = originOf(url).replace(/^https?:\/\//, '');
+    throw new Error(`${method} ${host} failed: ${err && err.message ? err.message : err}`);
+  }
 }
 
 module.exports = { nativeFetch, base64ToBytes, bytesToBase64 };
