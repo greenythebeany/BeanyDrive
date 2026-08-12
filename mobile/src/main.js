@@ -327,7 +327,7 @@ window.api = {
     pumpUploads();
     return { ok: true };
   },
-  pauseUpload: async ({ uploadId }) => {
+  pauseUpload: async (uploadId) => {
     const job = findJob(uploadId);
     if (!job) return { ok: false, error: 'Upload already finished' };
     if (job.state === 'running') { job.paused = true; job.controller.abort(); }
@@ -336,7 +336,7 @@ window.api = {
     pushUploads();
     return { ok: true };
   },
-  resumeUpload: async ({ uploadId }) => {
+  resumeUpload: async (uploadId) => {
     const job = findJob(uploadId);
     if (!job) return { ok: false, error: 'Upload no longer queued' };
     if (job.state !== 'paused' && job.state !== 'failed') {
@@ -348,7 +348,7 @@ window.api = {
     pumpUploads();
     return { ok: true };
   },
-  cancelUpload: async ({ uploadId }) => {
+  cancelUpload: async (uploadId) => {
     const job = findJob(uploadId);
     if (!job) return { ok: false, error: 'Upload already finished' };
     if (job.state === 'running') { job.canceled = true; job.controller.abort(); return { ok: true }; }
@@ -362,14 +362,23 @@ window.api = {
   prepareDrag: NOT_YET('Drag-out'),
   startDrag() {},
 
-  download: ({ fileId, name } = {}) => downloadToDevice(fileId, name),
-  copyLink: async ({ fileId }) => {
+  download: (fileId, name) => downloadToDevice(fileId, name),
+  copyLink: async (fileId) => {
     await ready;
     const { url, multiChunk } = await drive.getShareLink(fileId);
-    await navigator.clipboard.writeText(url).catch(() => {});
+    // The async clipboard API isn't guaranteed to exist; failing to copy
+    // shouldn't lose the link, so fall back to handing it to the share sheet.
+    const clipboard = typeof navigator !== 'undefined' && navigator.clipboard;
+    if (clipboard) {
+      try {
+        await clipboard.writeText(url);
+        return { ok: true, multiChunk };
+      } catch (e) { /* fall through to sharing it */ }
+    }
+    await Share.share({ title: 'Link', text: url, url }).catch(() => {});
     return { ok: true, multiChunk };
   },
-  previewFile: async ({ fileId }) => {
+  previewFile: async (fileId) => {
     await ready;
     const entry = drive.getEntry(fileId);
     if (!entry) return { ok: false, error: 'File not found' };
@@ -389,14 +398,14 @@ window.api = {
     }
   },
 
-  trash: guarded(({ fileId }) => drive.trashFile(fileId)),
-  restore: guarded(({ fileId }) => drive.restoreFile(fileId)),
-  star: guarded(({ fileId, value }) => drive.starFile(fileId, value)),
-  rename: guarded(({ fileId, name }) => drive.renameFile(fileId, name)),
-  addTag: guarded(({ fileId, tag }) => drive.addTag(fileId, tag)),
-  removeTag: guarded(({ fileId, tag }) => drive.removeTag(fileId, tag)),
-  createFolder: guarded(({ folderPath }) => drive.createFolder(folderPath)),
-  deleteFolder: guarded(({ folderPath }) => drive.deleteFolder(folderPath)),
+  trash: guarded((fileId) => drive.trashFile(fileId)),
+  restore: guarded((fileId) => drive.restoreFile(fileId)),
+  star: guarded((fileId, value) => drive.starFile(fileId, value)),
+  rename: guarded((fileId, name) => drive.renameFile(fileId, name)),
+  addTag: guarded((fileId, tag) => drive.addTag(fileId, tag)),
+  removeTag: guarded((fileId, tag) => drive.removeTag(fileId, tag)),
+  createFolder: guarded((folderPath) => drive.createFolder(folderPath)),
+  deleteFolder: guarded((folderPath) => drive.deleteFolder(folderPath)),
   refresh: guarded(() => drive.refresh()),
   emptyTrash: async () => {
     await ready;
