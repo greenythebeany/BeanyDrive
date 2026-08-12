@@ -18,6 +18,7 @@ const { nativeFetch } = require('../../platform/capacitor-http');
 const { capacitorFiles } = require('../../platform/capacitor-files');
 const { createResumeStore } = require('../../platform/capacitor-resume-store');
 const { guessMimeFor } = require('./mime');
+require('./mobile-ui'); // app bar, drawer, back button — pure UI, no drive access
 
 const { Preferences } = require('@capacitor/preferences');
 const { Filesystem, Directory } = require('@capacitor/filesystem');

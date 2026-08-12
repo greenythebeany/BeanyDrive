@@ -85,11 +85,33 @@ The SDK is at `D:/AndroidSDK`; Capacitor wrote that into
 
 ### Release signing
 
-The debug APK is signed with Android's debug key — fine for your own device,
-not for distribution. For a release build, mirror the JellyWave setup: put a
-keystore and a `keystore.properties` in `mobile/android/keystore/`, and add the
-matching `signingConfigs` block to `android/app/build.gradle`. Generating the
-keystore is a `keytool` command with passwords you choose, so it's yours to run.
+`build-apk.bat release` produces a release build — optimised, not debuggable.
+**Signing is the separate question.** With no keystore configured it falls back
+to Android's debug key, which is fine for your own phone (and lets a release
+build install straight over a debug one, since the signature matches) but is
+not suitable for distribution or the Play Store. Gradle prints a line saying so
+on every such build.
+
+To sign it properly, create a keystore — the passwords are yours to choose, so
+run this yourself:
+
+```sh
+keytool -genkeypair -v -keystore mobile/android/keystore/beanydrive-release.jks ^
+  -alias beanydrive -keyalg RSA -keysize 2048 -validity 10000
+```
+
+Then write `mobile/android/keystore/keystore.properties`:
+
+```properties
+storeFile=beanydrive-release.jks
+storePassword=<the store password you chose>
+keyAlias=beanydrive
+keyPassword=<the key password you chose>
+```
+
+`android/` is git-ignored, so neither file is committed — but keep a backup of
+the `.jks` somewhere safe. Lose it and you can never update an app signed with
+it; anyone who gets it can sign as you.
 
 ### Other commands
 

@@ -1,40 +1,99 @@
 /* Android-only overrides on top of the shared renderer/style.css.
-   Deliberately small: this hides the Electron window chrome and makes the
-   desktop three-pane layout survive a phone. A proper mobile layout pass is
-   still owed — this is the minimum that makes the build usable. */
+   The desktop layout is three fixed columns with a keyboard behind it; this
+   turns it into an app bar, a drawer, and one scrolling list. */
 
-/* The frameless titlebar is Electron chrome; `hidden` alone loses to the
-   stylesheet's display:flex. */
+/* ---- Electron chrome that has no meaning here ---- */
 .titlebar[hidden] { display: none !important; }
+.hint, .hints { display: none; }
 
-/* Status bar / notch. */
-.root { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+/* ---- app bar (injected by mobile-ui.js, lives outside #root) ---- */
+#m-appbar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 60;
+  height: calc(52px + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) 4px 0;
+  display: flex; align-items: center; gap: 4px;
+  background: var(--bg-panel); border-bottom: 1px solid var(--border);
+}
+#m-appbar button {
+  background: none; border: none; color: var(--text); font-family: inherit;
+  font-size: 20px; line-height: 1; width: 48px; height: 48px; /* thumb-sized */
+  cursor: pointer; padding: 0;
+}
+#m-appbar button:active { color: var(--accent); }
+#m-title { flex: 1; color: var(--text-bright); font-size: 15px; letter-spacing: 0.02em; }
 
+#m-scrim {
+  position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, 0.55);
+  opacity: 0; pointer-events: none; transition: opacity 0.18s ease;
+}
+body.nav-open #m-scrim { opacity: 1; pointer-events: auto; }
+
+/* Everything the renderer draws sits below the app bar. */
+.root { padding-top: calc(52px + env(safe-area-inset-top)); padding-bottom: env(safe-area-inset-bottom); }
+
+/* ---- layout ---- */
 @media (max-width: 820px) {
-  /* `.main` is the row that holds sidebar / list / detail — `.root` is already
-     a column of statusbar, main, statusbar. Stack the panes instead, and give
-     the file list whatever the other two don't take, otherwise the sidebar's
-     full-height rules push the list clean off the screen. */
-  .main { flex-direction: column; min-height: 0; }
+  /* `.main` is the row holding sidebar / list / detail; `.root` is already a
+     column of statusbar, main, statusbar. */
+  .main { flex-direction: column; min-height: 0; position: static; }
+
+  /* The sidebar becomes a drawer: off-canvas until the burger is tapped. */
   .sidebar {
-    width: 100%; max-width: none; height: auto; flex: 0 0 auto; max-height: 30vh;
-    flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 4px;
-    overflow-x: auto; overflow-y: hidden;
-    border-right: none; border-bottom: 1px solid var(--border-dim);
+    position: fixed; top: calc(52px + env(safe-area-inset-top)); left: 0; bottom: 0;
+    width: 78vw; max-width: 300px; z-index: 50;
+    transform: translateX(-102%); transition: transform 0.2s ease;
+    border-right: 1px solid var(--border); overflow-y: auto;
+    padding-bottom: calc(20px + env(safe-area-inset-bottom));
   }
-  /* The sidebar's section headings are dead weight in a horizontal strip. */
-  .sidebar .nav-section-label { display: none; }
-  .sidebar .nav-item { white-space: nowrap; }
+  body.nav-open .sidebar { transform: translateX(0); }
+  .sidebar .nav-item { padding-top: 11px; padding-bottom: 11px; } /* thumb-sized rows */
 
-  .list-pane { flex: 1 1 auto; min-height: 0; }
+  /* The list is the whole screen now. */
+  .list-pane { flex: 1 1 auto; min-width: 0; min-height: 0; border-right: none; }
 
+  /* The detail panel is a sheet along the bottom rather than a third column. */
   .detail-pane {
-    width: 100%; max-width: none; height: auto; flex: 0 0 auto; max-height: 40vh;
-    border-left: none; border-top: 1px solid var(--border-dim);
+    width: 100%; min-width: 0; max-height: 42vh; flex: 0 0 auto;
+    border-top: 1px solid var(--border);
   }
-  /* Touch targets: the desktop rows are sized for a mouse. */
+
   .file-row { padding-top: 12px; padding-bottom: 12px; }
-  .upload-btn, .icon-btn { padding: 8px 10px; }
-  /* Keyboard hints are meaningless without a keyboard. */
-  .hint, .hints { display: none; }
+  .icon-btn { padding: 9px 11px; }
+  .act-btn { padding: 11px 12px; }
+
+  /* Status bars: the top one is duplicated by the app bar's title, but its
+     connection state matters, so keep it and just tighten it. */
+  .statusbar-top, .statusbar-bottom { font-size: 10.5px; padding: 4px 8px; }
+  .statusbar-bottom { padding-bottom: calc(4px + env(safe-area-inset-bottom)); }
+
+  /* ---- settings: full-screen sheet with a real close button ----
+     On desktop this is a 340px panel closed by an "Esc" label — a 2px-padded
+     hit target named after a key the phone doesn't have. */
+  .settings-panel {
+    position: fixed; inset: calc(52px + env(safe-area-inset-top)) 0 0 0;
+    width: auto; border-left: none; z-index: 55;
+    padding: 16px 16px calc(28px + env(safe-area-inset-bottom));
+  }
+  .settings-head { position: sticky; top: 0; background: var(--bg-panel); padding-bottom: 10px; z-index: 1; }
+  .settings-head .title { font-size: 16px; }
+  .settings-head .esc {
+    font-size: 0; /* hides the word "Esc" */
+    width: 44px; height: 44px; display: flex; align-items: center; justify-content: center;
+    margin: -8px -8px -8px 0;
+  }
+  .settings-head .esc::after { content: '✕'; font-size: 20px; color: var(--text); }
+  .settings-input { padding: 11px 10px; font-size: 13px; } /* no zoom-on-focus */
+  .stepper-btn { min-width: 44px; }
+
+  /* ---- preview: full-screen, same close treatment ---- */
+  .preview-box { width: 100%; height: 100%; max-width: none; max-height: none; border-radius: 0; }
+  .preview-head { padding: 10px 12px; }
+  .preview-head .esc {
+    font-size: 0; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center;
+  }
+  .preview-head .esc::after { content: '✕'; font-size: 20px; color: var(--text); }
+  .preview-pager .icon-btn { padding: 10px 12px; }
+
+  /* Dialogs need room to breathe on a narrow screen. */
+  .modal-box, .prompt-box { width: calc(100vw - 32px); max-width: none; }
 }
