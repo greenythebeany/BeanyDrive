@@ -23,7 +23,6 @@ const { Preferences } = require('@capacitor/preferences');
 const { Filesystem, Directory } = require('@capacitor/filesystem');
 const { Share } = require('@capacitor/share');
 const { App } = require('@capacitor/app');
-const { Browser } = require('@capacitor/browser');
 
 const SETTINGS_KEY = 'beanydrive_settings';
 const TOKEN_KEY = 'beanydrive_token';
@@ -146,7 +145,9 @@ window.api = {
   getAppVersion: async () => (await App.getInfo().catch(() => ({ version: 'dev' }))).version,
   checkForUpdates: async () => ({ status: 'up-to-date' }), // APKs update out of band
   onUpdateAvailable() {},
-  openExternal: (url) => { if (/^https?:\/\//i.test(url)) Browser.open({ url }); },
+  // '_system' hands the URL to Android's default browser. @capacitor/browser
+  // would give an in-app tab, but it pulls in androidx.browser for no gain here.
+  openExternal: (url) => { if (/^https?:\/\//i.test(url)) window.open(url, '_system'); },
 
   getSettings: async () => { await ready; return publicSettings(await readSettings()); },
   saveSettings: async ({ token, channelId, chunkSizeMb, uploadConcurrency }) => {

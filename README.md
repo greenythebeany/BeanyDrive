@@ -196,6 +196,21 @@ On Windows this produces a portable `.exe` and an NSIS installer in `dist/`.
 On Linux it produces an `.AppImage` — make it executable (`chmod +x
 BeanyDrive-*.AppImage`) and run it directly.
 
+### 4. Android (work in progress)
+
+There's an Android build in [`mobile/`](mobile/README.md), sharing the whole
+UI and the `core/` drive logic with the desktop app:
+
+```sh
+cd mobile
+npm install
+.uild-apk.bat
+```
+
+It browses, previews and downloads. **It cannot upload yet** — that needs a
+native plugin, because a 10 MB chunk can't cross Capacitor's JS bridge without
+being base64'd twice. See [mobile/README.md](mobile/README.md) for the detail.
+
 ## Keyboard shortcuts
 
 | Key       | Action                              |

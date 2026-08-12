@@ -50,16 +50,53 @@ EncryptedSharedPreferences before this is installed anywhere that matters.
 
 ## Building
 
-Requires the **Android SDK**, which Android Studio does not install by default —
-open Android Studio → SDK Manager and install a platform + build-tools first.
-
 ```sh
 cd mobile
 npm install
-npm run build         # bundles core + copies renderer into mobile/www
-npx cap add android   # once, scaffolds mobile/android/
-npm run sync          # rebuild web assets and copy them into the native project
-npm run open          # open in Android Studio to build/run the APK
+.\build-apk.bat            # debug APK, installable on your own phone
+.\build-apk.bat release    # release APK, needs a keystore (see below)
+```
+
+That script rebuilds the web assets, runs `cap sync android`, and then Gradle.
+The APK lands in:
+
+```
+mobile/android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+Copy it to the phone and install it — Android will ask you to allow installs
+from whatever app you opened it with, the same way the desktop build trips
+SmartScreen.
+
+### Why the script instead of plain `gradlew`
+
+It sets two things for its own process only, both of which this machine needs
+(the same workarounds JellyWave's `build-release.bat` uses):
+
+- **`JAVA_HOME=C:\Program Files\Java\jdk-21`** — some Capacitor libraries ship
+  Java 21 bytecode, which an older compiler can't produce, and the JDK on PATH
+  here is 11.
+- **`TEMP=C:\jtmp`** — the default Windows temp path contains a non-ASCII
+  character (the accented username), which breaks the JDK's loopback selector
+  pipe.
+
+The SDK is at `D:/AndroidSDK`; Capacitor wrote that into
+`android/local.properties` itself.
+
+### Release signing
+
+The debug APK is signed with Android's debug key — fine for your own device,
+not for distribution. For a release build, mirror the JellyWave setup: put a
+keystore and a `keystore.properties` in `mobile/android/keystore/`, and add the
+matching `signingConfigs` block to `android/app/build.gradle`. Generating the
+keystore is a `keytool` command with passwords you choose, so it's yours to run.
+
+### Other commands
+
+```sh
+npm run build   # just the web assets -> mobile/www
+npm run sync    # build + copy into the native project
+npm run open    # open the project in Android Studio
 ```
 
 `mobile/www` and `mobile/android` are generated and git-ignored.
