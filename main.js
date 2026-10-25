@@ -100,12 +100,17 @@ function sweepAbandonedUploads() {
 
 app.whenReady().then(() => {
   const rendererRoot = path.join(__dirname, 'renderer');
+  const legalRoot = path.join(__dirname, 'docs', 'legal');
   protocol.handle('app', (request) => {
     const url = new URL(request.url);
     // app://bundle/<path> -> renderer/<path> ; app://bundle/ -> renderer/index.html
+    // app://bundle/legal/<doc>.md -> docs/legal/<doc>.md, so the in-app Legal
+    // pages are the same files as the ones in the repository.
     const relative = decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname);
-    const filePath = path.normalize(path.join(rendererRoot, relative));
-    if (!filePath.startsWith(rendererRoot)) return new Response('Forbidden', { status: 403 });
+    const isLegal = relative.startsWith('/legal/');
+    const base = isLegal ? legalRoot : rendererRoot;
+    const filePath = path.normalize(path.join(base, isLegal ? relative.slice('/legal'.length) : relative));
+    if (!filePath.startsWith(base)) return new Response('Forbidden', { status: 403 });
     return net.fetch(pathToFileURL(filePath).toString());
   });
 
@@ -120,16 +125,8 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 
-  // Silent background check — only speaks up if something's actually newer.
-  setTimeout(() => {
-    checkForUpdates()
-      .then((result) => {
-        if (result.status === 'available' && mainWindow) {
-          mainWindow.webContents.send('update:available', result);
-        }
-      })
-      .catch(() => {});
-  }, 4000);
+  // The automatic update check is started by the renderer, which knows
+  // whether the user turned it off (Settings → About).
 });
 
 app.on('window-all-closed', () => {

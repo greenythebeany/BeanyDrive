@@ -270,6 +270,9 @@
     shortcutsOpen: false,
     updatePrompt: null,
     updateDl: null,    // { phase: 'downloading' | 'ready' | 'error', received, total }
+    autoUpdate: ls.get('beanydrive_auto_update', '1') !== '0',
+    privacySeen: ls.get('beanydrive_privacy_seen', '0') === '1',
+    legal: null,       // { doc, html, error } — a page from docs/legal shown in-app
     mobileSearch: false,
     dropActive: false,
     transfersOpen: true,
@@ -1273,7 +1276,9 @@
     confirm: () => (state.confirmModal ? buildConfirmModal() : ''),
     prompt: () => (state.promptModal ? buildPromptModal() : ''),
     shortcuts: () => (state.shortcutsOpen ? buildShortcuts() : ''),
+    legal: () => (state.legal ? buildLegal() : ''),
     update: () => (state.updatePrompt ? buildUpdateModal() : ''),
+    notice: () => (!state.privacySeen && !state.legal && state.connection.status !== 'connecting' ? buildPrivacyNotice() : ''),
     menu: () => (state.menu ? buildMenu() : ''),
     drop: () => (state.dropActive ? `<div class="drop-overlay"><div class="drop-card">${icon('upload', 36)}<div>Drop to upload to <b>${esc(currentFolder() || 'My Drive')}</b></div></div></div>` : ''),
   };
@@ -1396,6 +1401,14 @@
                 <span class="grow"></span>
                 <button class="btn" data-act="check-updates">Check for updates</button>
               </div>
+              <label class="check-row" data-act="toggle-auto-update">
+                <span class="box ${state.autoUpdate ? 'on' : ''}">${state.autoUpdate ? icon('check', 14) : ''}</span>
+                Check GitHub for a new version at startup
+              </label>
+              <div class="field legal-field">
+                <label>Legal</label>
+                <div class="legal-links">${LEGAL_DOCS.map((d) => `<button class="link" data-act="legal" data-doc="${d.id}">${d.label}</button>`).join('')}</div>
+              </div>
             </div>
           </div>
         </section>
@@ -1449,21 +1462,94 @@
       </div>`, 'prompt-modal');
   }
 
-  // GitHub release notes are Markdown; only headings, bullets and bold are
-  // worth rendering here, everything else stays plain (and escaped) text.
-  function renderNotes(md) {
-    const inline = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
-    let html = '', inList = false;
-    for (const raw of String(md || '').split(/\r?\n/)) {
+  // The small Markdown subset the release notes and the Legal pages use:
+  // headings, paragraphs, bullets, tables, quotes, bold, italics, code and
+  // links. Everything is escaped first; links become buttons the click
+  // handler routes (another Legal page in-app, anything else to the browser),
+  // so no URL from the text ever becomes a live href.
+  function renderMarkdown(md, headTag = 'h4') {
+    const inline = (s) => esc(s)
+      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, href) => `<button class="link" data-act="md-link" data-href="${href}">${text}</button>`)
+      .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+      .replace(/(^|[\s(])_(.+?)_(?=[\s.,;:)]|$)/g, '$1<i>$2</i>')
+      .replace(/`([^`]+)`/g, '<code>$1</code>');
+    const lines = String(md || '').split(/\r?\n/);
+    let html = '', list = false, table = null, quote = '';
+    const flush = () => {
+      if (list) { html += '</ul>'; list = false; }
+      if (table) { html += `<div class="md-table"><table>${table}</table></div>`; table = null; }
+      if (quote) { html += `<blockquote>${quote}</blockquote>`; quote = ''; }
+    };
+    for (const raw of lines) {
       const line = raw.trim();
+      if (/^\|/.test(line)) {
+        if (/^\|[\s|:-]+\|$/.test(line)) continue; // header separator
+        const cells = line.replace(/^\||\|$/g, '').split('|').map((c) => inline(c.trim()));
+        const tag = table == null ? 'th' : 'td';
+        if (table == null) { flush(); table = ''; }
+        table += `<tr>${cells.map((c) => `<${tag}>${c}</${tag}>`).join('')}</tr>`;
+        continue;
+      }
+      const q = /^>\s?(.*)/.exec(line);
+      if (q) { if (!quote) flush(); quote += `${inline(q[1])} `; continue; }
       const bullet = /^[-*]\s+(.*)/.exec(line);
-      if (bullet) { if (!inList) { html += '<ul>'; inList = true; } html += `<li>${inline(bullet[1])}</li>`; continue; }
-      if (inList) { html += '</ul>'; inList = false; }
-      const head = /^#{1,6}\s+(.*)/.exec(line);
-      if (head) html += `<h4>${inline(head[1])}</h4>`;
+      if (bullet) { if (!list) { flush(); html += '<ul>'; list = true; } html += `<li>${inline(bullet[1])}</li>`; continue; }
+      flush();
+      const head = /^(#{1,6})\s+(.*)/.exec(line);
+      if (head) html += head[1].length === 1 ? `<h2>${inline(head[2])}</h2>` : `<${headTag}>${inline(head[2])}</${headTag}>`;
       else if (line) html += `<p>${inline(line)}</p>`;
     }
-    return inList ? `${html}</ul>` : html;
+    flush();
+    return html;
+  }
+  const renderNotes = (md) => renderMarkdown(md);
+
+  // Legal pages ship with the app (app://bundle/legal/ on desktop, www/legal
+  // on Android), so they open offline and match the repository's copies.
+  const LEGAL_DOCS = [
+    { id: 'PRIVACY', label: 'Privacy Policy' },
+    { id: 'TERMS', label: 'Terms of Service' },
+    { id: 'DATA_DELETION', label: 'Data Deletion' },
+    { id: 'THIRD_PARTY_NOTICES', label: 'Third-Party Notices' },
+  ];
+  function openLegal(id) {
+    state.legal = { doc: id, html: null, error: null };
+    state.menu = null;
+    render();
+    fetch(`legal/${id}.md`)
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+      .then((md) => { if (state.legal && state.legal.doc === id) { state.legal.html = renderMarkdown(md, 'h3'); render(); } })
+      .catch((e) => { if (state.legal && state.legal.doc === id) { state.legal.error = `Couldn't open this page (${e.message}).`; render(); } });
+  }
+  function buildLegal() {
+    const l = state.legal;
+    const label = (LEGAL_DOCS.find((d) => d.id === l.doc) || {}).label || 'Legal';
+    return modal('legal-overlay', `
+      <div class="modal-head"><h2>${esc(label)}</h2><button class="icon-btn" data-act="close-top">${icon('close')}</button></div>
+      <div class="legal-tabs">${LEGAL_DOCS.map((d) => `<button class="chip ${d.id === l.doc ? 'on' : ''}" data-act="legal" data-doc="${d.id}">${d.label}</button>`).join('')}</div>
+      <div class="legal-body">${l.error ? `<div class="notice err">${icon('warn', 18)}<span>${esc(l.error)}</span></div>` : (l.html || '<p class="hint">Loading…</p>')}</div>`, 'wide legal-modal');
+  }
+  // Links inside rendered Markdown: another Legal page stays in-app, anchors
+  // are ignored, anything http(s) opens in the browser.
+  function followMarkdownLink(href) {
+    const doc = /^(?:\.\/)?([A-Z_]+)\.md$/.exec(href);
+    if (doc && LEGAL_DOCS.some((d) => d.id === doc[1])) { openLegal(doc[1]); return; }
+    if (/^https?:\/\//i.test(href)) api.openExternal(href);
+  }
+
+  function buildPrivacyNotice() {
+    return `
+      <div class="privacy-notice" role="region" aria-label="Privacy notice">
+        <div class="pn-text">
+          <b>Your files live in your own Discord channel.</b> BeanyDrive has no server and collects nothing.
+          It talks to Discord with your bot token, and to GitHub to check for updates (you can turn that off in Settings).
+          Files aren't encrypted by BeanyDrive, so anyone who can read that channel can read them.
+        </div>
+        <div class="pn-actions">
+          <button class="btn btn-quiet" data-act="legal" data-doc="PRIVACY">Privacy Policy</button>
+          <button class="btn btn-primary" data-act="privacy-ok">Got it</button>
+        </div>
+      </div>`;
   }
 
   function buildUpdateModal() {
@@ -1997,6 +2083,7 @@
     if (state.confirmModal) { state.confirmModal = null; render(); return true; }
     if (state.promptModal) { closePrompt(); return true; }
     if (state.movePicker) { state.movePicker = null; render(); return true; }
+    if (state.legal) { state.legal = null; render(); return true; }
     if (state.updatePrompt) { state.updatePrompt = null; render(); return true; }
     if (state.shortcutsOpen) { state.shortcutsOpen = false; render(); return true; }
     if (state.settingsOpen) { toggleSettings(); return true; }
@@ -2111,6 +2198,14 @@
       });
     },
     'upload-folder': triggerFolderUpload,
+    legal: (el) => openLegal(el.dataset.doc),
+    'md-link': (el) => followMarkdownLink(el.dataset.href),
+    'privacy-ok': () => { state.privacySeen = true; ls.set('beanydrive_privacy_seen', '1'); render(); },
+    'toggle-auto-update': () => {
+      state.autoUpdate = !state.autoUpdate;
+      ls.set('beanydrive_auto_update', state.autoUpdate ? '1' : '0');
+      render();
+    },
   };
 
   // ---- events (bound once; regions only carry data-* attributes) ---------------------
@@ -2670,6 +2765,15 @@
     applyStatusSnapshot(await api.getStatus());
     render();
     api.getAppVersion().then((v) => { state.appVersion = v; if (state.settingsOpen) render(); });
+    // A quiet check a few seconds in, unless turned off in Settings → About;
+    // it only speaks up when something newer exists.
+    if (state.autoUpdate) {
+      setTimeout(() => {
+        api.checkForUpdates().then((r) => {
+          if (r && r.status === 'available' && !state.updatePrompt) { state.updatePrompt = r; render(); }
+        }).catch(() => {});
+      }, 4000);
+    }
   }
 
   init();

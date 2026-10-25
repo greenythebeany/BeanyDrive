@@ -77,10 +77,8 @@ async function checkForUpdates() {
     return { status: 'error', error: e.message };
   }
 }
-// Quietly, once per launch, like the desktop build.
-setTimeout(() => {
-  checkForUpdates().then((r) => { if (r.status === 'available') emit('updateAvailable', r); }).catch(() => {});
-}, 5000);
+// The automatic check itself is started by the renderer, which knows whether
+// the user turned it off (Settings → About).
 
 // --- settings -------------------------------------------------------------
 // The token lives in Preferences, which on Android is SharedPreferences —
