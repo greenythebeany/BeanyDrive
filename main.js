@@ -5,7 +5,7 @@ const { pathToFileURL } = require('url');
 const { DiscordDrive, testConnection, isCancelError, isPauseError } = require('./discord-client');
 const driveConfig = require('./drive-config');
 const { guessMime } = require('./util');
-const { checkForUpdates } = require('./update-checker');
+const { checkForUpdates, downloadUpdate, installAndQuit } = require('./update-checker');
 const { createResumeStore } = require('./upload-resume');
 const { createRateTracker } = require('./upload-stats');
 const { createDragCache } = require('./drag-cache');
@@ -150,6 +150,28 @@ ipcMain.handle('update:check', async () => {
     return { status: 'error', error: e.message };
   }
 });
+// Install only ever runs the file downloadUpdate() itself produced this
+// session — the renderer never gets to name a path to execute.
+let downloadedUpdate = null;
+ipcMain.handle('update:download', async (event) => {
+  try {
+    const result = await downloadUpdate((progress) => {
+      if (!event.sender.isDestroyed()) event.sender.send('update:progress', progress);
+    });
+    downloadedUpdate = result.file;
+    return { ok: true, verified: result.verified };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+ipcMain.handle('update:install', () => {
+  try {
+    installAndQuit(downloadedUpdate, () => app.quit());
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
 ipcMain.on('shell:openExternal', (e, url) => {
   if (/^https?:\/\//i.test(url)) shell.openExternal(url);
 });
@@ -202,7 +224,8 @@ let taskSeq = 0; // progress rows that aren't uploads: Empty Trash, drag prep
 // these outlive the transfer: a paused or failed job stays here holding the
 // state its Resume/Retry button needs.
 const uploadJobs = [];
-let pumping = false;
+const PARALLEL_FILES = 3;
+let runningJobs = 0;
 let statsTimer = null;
 
 function send(channel, payload) {
@@ -304,24 +327,33 @@ async function runJob(job) {
   pushUpdate();
 }
 
-async function pumpUploads() {
-  if (pumping) return;
-  pumping = true;
-  try {
-    for (;;) {
-      const job = uploadJobs.find((j) => j.state === 'queued');
-      if (!job) break;
-      await runJob(job);
-    }
-  } finally {
-    pumping = false;
-    stopStatsTicker();
+// Several files upload at once. Their chunks still share the drive's
+// concurrency limit, so this doesn't multiply load on Discord — it keeps the
+// pipe full across file boundaries (a small file no longer waits for a big
+// one) and lets finished files share one metadata save.
+function pumpUploads() {
+  while (runningJobs < PARALLEL_FILES) {
+    const job = uploadJobs.find((j) => j.state === 'queued');
+    if (!job) break;
+    runningJobs += 1;
+    job.state = 'running'; // claimed before runJob's first await
+    runJob(job).finally(() => {
+      runningJobs -= 1;
+      pumpUploads();
+    });
   }
+  if (!runningJobs) stopStatsTicker();
 }
 
 function findJob(uploadId) {
   return uploadJobs.find((j) => j.uploadId === uploadId) || null;
 }
+
+ipcMain.handle('files:pickFolder', async () => {
+  if (!mainWindow) return null;
+  const res = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
+  return res.canceled ? null : res.filePaths[0];
+});
 
 ipcMain.handle('drive:upload', async (e, { paths, destFolder }) => {
   try {
@@ -563,3 +595,6 @@ ipcMain.handle('drive:removeTag', wrapMutation(({ fileId, tag }) => drive.remove
 ipcMain.handle('drive:createFolder', wrapMutation(({ folderPath }) => drive.createFolder(folderPath)));
 ipcMain.handle('drive:deleteFolder', wrapMutation(({ folderPath }) => drive.deleteFolder(folderPath)));
 ipcMain.handle('drive:refresh', wrapMutation(() => drive.refresh()));
+ipcMain.handle('drive:updateFiles', wrapMutation(({ fileIds, patch }) => drive.updateFiles(fileIds, patch)));
+ipcMain.handle('drive:moveFiles', wrapMutation(({ fileIds, destFolder }) => drive.moveFiles(fileIds, destFolder)));
+ipcMain.handle('drive:renameFolder', wrapMutation(({ oldPath, newPath }) => drive.renameFolder(oldPath, newPath)));

@@ -9,6 +9,9 @@ contextBridge.exposeInMainWorld('api', {
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   onUpdateAvailable: (cb) => ipcRenderer.on('update:available', (e, info) => cb(info)),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  onUpdateProgress: (cb) => ipcRenderer.on('update:progress', (e, p) => cb(p)),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
   openExternal: (url) => ipcRenderer.send('shell:openExternal', url),
 
   getSettings: () => ipcRenderer.invoke('settings:get'),
@@ -42,6 +45,7 @@ contextBridge.exposeInMainWorld('api', {
   },
 
   pickFiles: () => ipcRenderer.invoke('files:pickFiles'),
+  pickFolder: () => ipcRenderer.invoke('files:pickFolder'),
   upload: (paths, destFolder) => ipcRenderer.invoke('drive:upload', { paths, destFolder }),
   cancelUpload: (uploadId) => ipcRenderer.invoke('drive:cancelUpload', { uploadId }),
   pauseUpload: (uploadId) => ipcRenderer.invoke('drive:pauseUpload', { uploadId }),
@@ -60,4 +64,8 @@ contextBridge.exposeInMainWorld('api', {
   createFolder: (folderPath) => ipcRenderer.invoke('drive:createFolder', { folderPath }),
   deleteFolder: (folderPath) => ipcRenderer.invoke('drive:deleteFolder', { folderPath }),
   refresh: () => ipcRenderer.invoke('drive:refresh'),
+  // Selection-wide versions: one metadata save for the lot.
+  updateFiles: (fileIds, patch) => ipcRenderer.invoke('drive:updateFiles', { fileIds, patch }),
+  moveFiles: (fileIds, destFolder) => ipcRenderer.invoke('drive:moveFiles', { fileIds, destFolder }),
+  renameFolder: (oldPath, newPath) => ipcRenderer.invoke('drive:renameFolder', { oldPath, newPath }),
 });

@@ -4,34 +4,27 @@
 <meta charset="utf-8">
 <title>BeanyDrive</title>
 <script>
+// Applied before the stylesheet paints so the window never flashes the wrong
+// theme or style; renderer.js owns these attributes from then on.
 (function () {
   try {
     var theme = localStorage.getItem('beanydrive_theme') || 'system';
     if (theme === 'system') {
       theme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
     }
-    document.documentElement.dataset.theme = theme;
-    document.documentElement.dataset.density = localStorage.getItem('beanydrive_density') || 'comfortable';
-    document.documentElement.style.setProperty('--accent', localStorage.getItem('beanydrive_accent_hex') || '#ff5c5c');
+    var root = document.documentElement;
+    root.dataset.theme = theme;
+    root.dataset.ui = localStorage.getItem('beanydrive_ui') || 'nothing';
+    root.dataset.density = localStorage.getItem('beanydrive_density') || 'comfortable';
+    var accent = localStorage.getItem('beanydrive_accent_hex');
+    if (accent) root.style.setProperty('--accent', accent);
   } catch (e) {}
 })();
 </script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="titlebar">
-    <div class="titlebar-left">
-      <span class="chevron">&#10095;_</span>
-      <span id="titlebar-label">BeanyDrive</span>
-    </div>
-    <div class="titlebar-buttons">
-      <div class="tb-btn" id="btn-min" title="Minimize">&#9472;</div>
-      <div class="tb-btn" id="btn-max" title="Maximize">&#9633;</div>
-      <div class="tb-btn tb-close" id="btn-close" title="Close">&#10005;</div>
-    </div>
-  </div>
-
-  <input type="file" id="file-input" multiple style="display:none" />
+  <input type="file" id="file-input" multiple hidden />
   <div id="root" class="root"></div>
   <div id="preview-root"></div>
 
