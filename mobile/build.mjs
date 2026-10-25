@@ -19,6 +19,8 @@ await mkdir(www, { recursive: true });
 
 // Shared UI, unchanged.
 await cp(path.join(repo, 'renderer'), www, { recursive: true });
+// The Legal pages Settings shows, at the path the desktop serves them from.
+await cp(path.join(repo, 'docs', 'legal'), path.join(www, 'legal'), { recursive: true });
 
 // The Node/Electron half, replaced by mobile/src/main.js.
 await build({

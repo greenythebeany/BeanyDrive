@@ -30,6 +30,7 @@
       "util.js",
       "icon.png",
       "renderer/**/*",
+      "docs/legal/**/*",
       "update-checker.js",
       "upload-resume.js",
       "upload-stats.js",

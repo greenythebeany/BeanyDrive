@@ -396,6 +396,15 @@ limit usually caps you anyway; set it to **1** on an unstable connection.
 Your uplink matters too: ~10 MB/s is about **80 Mbps** upstream, more than
 most home connections have.
 
+## Legal
+
+- [Privacy Policy](docs/legal/PRIVACY.md): BeanyDrive has no server and collects nothing; your files live, unencrypted, in your own Discord channel.
+- [Terms of Service](docs/legal/TERMS.md)
+- [Data Deletion](docs/legal/DATA_DELETION.md)
+- [Third-Party Notices & Licenses](docs/legal/THIRD_PARTY_NOTICES.md)
+
+The same pages are in the app under **Settings → About → Legal**. The app also shows a short privacy notice the first time it starts, and its automatic update check can be turned off there.
+
 ## Office preview
 
 `.docx` and `.pptx` are ZIP archives full of XML, and Chromium can already
