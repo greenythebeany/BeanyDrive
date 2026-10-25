@@ -4,7 +4,7 @@ _Last updated: 2026-10-25_
 
 BeanyDrive is a client app that stores your files in a **Discord channel you own, through a Discord bot you create**. The developer runs no server for BeanyDrive, does not receive analytics or telemetry from your copy of the app, and cannot see your files, your bot token or your channel.
 
-BeanyDrive is a free personal project maintained by one developer (GitHub: [greenythebeany](https://github.com/greenythebeany)). There is no company behind it. The only contact channel is [GitHub Issues on the BeanyDrive repo](https://github.com/greenythebeany/BeanyDrive/issues); that's also where to report a privacy or licensing concern.
+BeanyDrive is a free, open-source (MIT-licensed) personal project maintained by one developer (GitHub: [greenythebeany](https://github.com/greenythebeany)). There is no company behind it. The only contact channel is [GitHub Issues on the BeanyDrive repo](https://github.com/greenythebeany/BeanyDrive/issues); that's also where to report a privacy or licensing concern.
 
 This document is also available inside the app, under **Settings → About → Legal**.
 

@@ -398,6 +398,8 @@ most home connections have.
 
 ## Legal
 
+BeanyDrive is free, open-source software under the [MIT License](LICENSE).
+
 - [Privacy Policy](docs/legal/PRIVACY.md): BeanyDrive has no server and collects nothing; your files live, unencrypted, in your own Discord channel.
 - [Terms of Service](docs/legal/TERMS.md)
 - [Data Deletion](docs/legal/DATA_DELETION.md)

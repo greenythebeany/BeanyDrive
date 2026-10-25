@@ -2,7 +2,7 @@
 
 _Last updated: 2026-10-25_
 
-- **As-is, free of charge.** BeanyDrive is provided free of charge and **as-is, with no warranty of any kind**, to the extent the law allows. The developer is not liable for lost, corrupted or exposed files, or for anything that happens to your Discord account, bot or server as a result of using it.
+- **As-is, free of charge, under the MIT license.** BeanyDrive is free, open-source software licensed under the [MIT License](https://github.com/greenythebeany/BeanyDrive/blob/main/LICENSE). It's provided **as-is, with no warranty of any kind**, to the extent the law allows. The developer is not liable for lost, corrupted or exposed files, or for anything that happens to your Discord account, bot or server as a result of using it.
 - **Not a backup service.** BeanyDrive stores files in a Discord channel. Discord doesn't promise to keep them, and can delete messages, attachments, bots or accounts under its own terms. Keep your own copy of anything you can't afford to lose.
 - **Discord's rules apply to you.** You need your own Discord account, server and bot. Using BeanyDrive means using Discord's service, and you're responsible for following [Discord's Terms of Service](https://discord.com/terms), [Community Guidelines](https://discord.com/guidelines) and [Developer Policy](https://support-dev.discord.com/hc/en-us/articles/8563934450327-Discord-Developer-Policy). That includes any limits Discord places on how attachments and bots may be used.
 - **Your content is your responsibility.** You're solely responsible for what you upload, and for having the right to store and share it. Don't use BeanyDrive for illegal content, or for content that infringes anyone's copyright or other rights.
