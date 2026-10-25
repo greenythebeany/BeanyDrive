@@ -23,6 +23,12 @@ const OUTPUTS = [
   // transparent margin, or it looks oversized next to every other Dock icon.
   { file: 'build/icon-mac.png', size: 1024, mode: 'inset', scale: 0.805 },
   { file: 'mobile/assets/icon.png', size: 1024, mode: 'bleed', scale: 0.86 },
+  // Android adaptive icon, as two layers like Triptych's: the symbol alone on
+  // transparent, and a plain black background. Launchers and icon packs (the
+  // Nothing pack among them) lift the foreground onto their own shape; a single
+  // flat image with the black tile baked in gets shrunk onto a plate instead.
+  { file: 'mobile/assets/icon-foreground.png', size: 1024, mode: 'rounded', svg: 'symbol' },
+  { file: 'mobile/assets/icon-background.png', size: 1024, mode: 'bleed', scale: 0, svg: 'none' },
   { file: 'mobile/assets/splash.png', size: 2732, mode: 'bleed', scale: 0.26 },
 ];
 
@@ -53,8 +59,14 @@ app.whenReady().then(async () => {
   const win = new BrowserWindow({ show: false });
   await win.loadURL('about:blank');
   for (const o of OUTPUTS) {
-    // The splash uses the artwork without its own black square around it.
-    const source = o.file.endsWith('splash.png') ? svg.replace(/<rect width="1932"[^>]*\/>/, '') : svg;
+    // The splash and the adaptive foreground use the artwork without its own
+    // black square. The foreground is also re-framed on the cloud: centred,
+    // two thirds of the layer wide, since the launcher insets the layer by
+    // 16.7% a side and masks it to its own shape.
+    const noTile = svg.replace(/<rect width="1932"[^>]*\/>/, '');
+    let source = o.file.endsWith('splash.png') ? noTile : svg;
+    if (o.svg === 'symbol') source = noTile.replace('viewBox="0 0 1932 1932"', 'viewBox="-130 -140 2206 2206"');
+    if (o.svg === 'none') source = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1" width="1" height="1"></svg>';
     const b64 = await win.webContents.executeJavaScript(renderer(source, o.size, o.mode, o.scale));
     fs.mkdirSync(path.dirname(path.join(root, o.file)), { recursive: true });
     fs.writeFileSync(path.join(root, o.file), Buffer.from(b64, 'base64'));
