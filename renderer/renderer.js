@@ -2,6 +2,9 @@
   'use strict';
 
   const api = window.api;
+  // macOS draws its own traffic lights in the app bar (see main.js).
+  const IS_MAC = api.platform === 'darwin';
+  document.documentElement.classList.toggle('mac', IS_MAC);
   const root = document.getElementById('root');
   const previewRoot = document.getElementById('preview-root');
 
@@ -1470,7 +1473,7 @@
     const pct = dl.total ? Math.round((dl.received / dl.total) * 100) : 0;
     let primary;
     if (!u.canInstall) primary = `<button class="btn btn-primary" data-act="update-open">${icon('download', 18)}${api.isMobile ? 'Download APK' : 'Open release page'}</button>`;
-    else if (dl.phase === 'ready') primary = `<button class="btn btn-primary" data-act="update-install">${icon('refresh', 18)}Restart &amp; install</button>`;
+    else if (dl.phase === 'ready') primary = `<button class="btn btn-primary" data-act="update-install">${icon('refresh', 18)}${u.platform === 'darwin' ? 'Quit &amp; open installer' : 'Restart &amp; install'}</button>`;
     else primary = `<button class="btn btn-primary" data-act="update-download" ${dl.phase === 'downloading' ? 'disabled' : ''}>${icon('download', 18)}${dl.phase === 'downloading' ? 'Downloading…' : (u.portable ? 'Download new version' : 'Download &amp; install')}</button>`;
     return modal('update-overlay', `
       <div class="update-head">
@@ -1481,7 +1484,7 @@
       ${dl.phase === 'downloading' || dl.phase === 'ready' ? `
         <div class="update-progress">
           <div class="bar"><span style="width:${dl.phase === 'ready' ? 100 : pct}%"></span></div>
-          <div class="hint">${dl.phase === 'ready' ? `Downloaded${dl.verified ? ' and verified' : ''} — BeanyDrive closes while the installer runs.` : `${fmtSize(dl.received)} of ${fmtSize(dl.total)} · ${pct}%`}</div>
+          <div class="hint">${dl.phase === 'ready' ? `Downloaded${dl.verified ? ' and verified' : ''} — ${u.platform === 'darwin' ? 'BeanyDrive quits and opens the disk image; drag BeanyDrive onto Applications to replace this version.' : 'BeanyDrive closes while the installer runs.'}` : `${fmtSize(dl.received)} of ${fmtSize(dl.total)} · ${pct}%`}</div>
         </div>` : ''}
       ${dl.phase === 'error' ? `<div class="notice err">${icon('warn', 18)}<span>${esc(dl.error)}</span></div>` : ''}
       ${busyUploads && u.canInstall ? `<div class="notice warn">${icon('info', 18)}<span>Uploads are running. Installing stops them; start them again afterwards and they resume where they left off.</span></div>` : ''}
@@ -2288,6 +2291,10 @@
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key.toLowerCase() === 'a') { e.preventDefault(); ACTIONS['select-all'](); return; }
     if (mod && e.key.toLowerCase() === 'f') { e.preventDefault(); focusSearch(); return; }
+    // Mac conventions: Cmd+Delete moves to Trash (a Mac keyboard's Delete is
+    // Backspace), Cmd+, opens settings.
+    if (IS_MAC && e.metaKey && e.key === 'Backspace') { e.preventDefault(); if (state.nav === 'trash') restoreTargets(); else trashTargets(); return; }
+    if (e.metaKey && e.key === ',') { e.preventDefault(); toggleSettings(); return; }
     if (mod) return;
     switch (e.key) {
       case 'ArrowDown': case 'j': e.preventDefault(); moveFocus(state.viewMode === 'grid' && e.key === 'ArrowDown' ? gridColumns() : 1, e.shiftKey); return;

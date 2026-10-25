@@ -220,15 +220,50 @@ Word/PowerPoint open full-window without a Save As dialog:
 
 ### 2. Install & run
 
-**Option A: Download (recommended)** — grab the latest NSIS installer or
-portable `.exe` (Windows) or `.AppImage` (Linux) from the
-[Releases page](https://github.com/Greenythebeany/BeanyDrive/releases). No
-Node/npm needed. From 2.0 on, later versions update from inside the app.
+**Option A: Download (recommended)** — grab the latest build for your system
+from the [Releases page](https://github.com/Greenythebeany/BeanyDrive/releases).
+No Node/npm needed. From 2.0 on, later versions update from inside the app.
+
+| System | File |
+| ------ | ---- |
+| Windows | `BeanyDrive.Setup.<version>.exe` (installer) or `BeanyDrive.<version>.exe` (portable) |
+| macOS, Apple Silicon (M1 and later) | `BeanyDrive-<version>-arm64.dmg` |
+| macOS, Intel | `BeanyDrive-<version>-x64.dmg` |
+| Linux | `BeanyDrive-<version>.AppImage` |
+| Android | `BeanyDrive-<version>-android.apk` |
 
 > **Windows will show a blue "Windows protected your PC" SmartScreen
 > warning the first time you run it.** That's expected for any small,
 > unsigned app — it's not a virus detection. Click **More info**, then
 > **Run anyway**.
+
+#### macOS
+
+Open the `.dmg` and drag **BeanyDrive** onto **Applications**. Not sure
+which file? Apple menu → **About This Mac**: "Chip: Apple M…" means `arm64`,
+"Processor: Intel" means `x64`.
+
+BeanyDrive isn't notarized by Apple (that needs a paid Apple Developer
+account), so **the first launch is blocked**: macOS says it "can't be opened"
+or "can't verify" the app. Allow it once:
+
+1. Try to open BeanyDrive, and click **Done** (or **OK**) on the warning.
+2. Open **System Settings → Privacy & Security**, scroll down to the message
+   about BeanyDrive, and click **Open Anyway**. Confirm with your password.
+
+Or, in Terminal:
+
+```sh
+xattr -cr /Applications/BeanyDrive.app
+```
+
+After that it opens normally, including after in-app updates. On macOS an
+update downloads the new `.dmg`, quits BeanyDrive and opens the disk image;
+drag BeanyDrive onto Applications again and choose **Replace**.
+
+The window uses macOS's own red/yellow/green buttons, and the usual Mac
+shortcuts work: **Cmd+Delete** moves to Trash, **Cmd+,** opens Settings,
+**Cmd+F** searches.
 
 **Option B: Run from source**
 
@@ -250,7 +285,14 @@ npm run dist
 On Windows this produces an NSIS installer, a portable `.exe` and
 `latest.yml` in `dist/`. Attach all three to the GitHub release: the in-app
 updater looks for the `Setup` installer (or the portable `.exe`) and checks
-it against `latest.yml`. On Linux it produces an `.AppImage`.
+it against `latest.yml`. On Linux it produces an `.AppImage`, on a Mac the
+two `.dmg` files.
+
+**Releasing.** Build the Windows files locally and create the GitHub
+release with them, then push a `release/<version>` branch. CI builds the
+rest and attaches it to that release: the Android APK
+(`android-release-build.yml`), the Linux AppImage (`linux-release-build.yml`)
+and both macOS disk images (`mac-release-build.yml`, on a macOS runner).
 
 ### 4. Android
 
@@ -294,7 +336,8 @@ Press `?` in the app for the same list.
 | `i`                   | Show / hide the details panel            |
 | `g`                   | Grid / list                              |
 | `F5`                  | Refresh from Discord                     |
-| `,`                   | Settings                                 |
+| `,` (Mac: `Cmd` + `,`) | Settings                                |
+| `Cmd` + `Delete`      | Move to Trash (Mac)                      |
 | `Esc`                 | Close the top dialog, clear selection or search |
 | `←` / `→`             | Previous / next page (PDF preview)       |
 

@@ -11,6 +11,7 @@ const root = path.join(__dirname, '..');
 const svg = fs.readFileSync(path.join(root, 'icon.svg'), 'utf8');
 
 // mode 'rounded': the icon as drawn, transparent outside the rounded square.
+// mode 'inset':   the same, shrunk to `scale` with transparent margin around it.
 // mode 'bleed':   a full black square with the artwork scaled into the middle —
 //                 Android launchers apply their own mask, and the splash
 //                 screen is a plain black field.
@@ -18,6 +19,9 @@ const OUTPUTS = [
   { file: 'icon.png', size: 1024, mode: 'rounded' },
   { file: 'thumbnail.png', size: 512, mode: 'rounded' },
   { file: 'renderer/logo.png', size: 128, mode: 'rounded' },
+  // macOS icons sit inside Apple's grid: the shape is ~80% of the canvas with
+  // transparent margin, or it looks oversized next to every other Dock icon.
+  { file: 'build/icon-mac.png', size: 1024, mode: 'inset', scale: 0.805 },
   { file: 'mobile/assets/icon.png', size: 1024, mode: 'bleed', scale: 0.86 },
   { file: 'mobile/assets/splash.png', size: 2732, mode: 'bleed', scale: 0.26 },
 ];
@@ -33,6 +37,9 @@ function renderer(svgText, size, mode, scale) {
     if (${JSON.stringify(mode)} === 'bleed') {
       g.fillStyle = '#000';
       g.fillRect(0, 0, ${size}, ${size});
+      const s = ${size} * ${scale || 1};
+      g.drawImage(img, (${size} - s) / 2, (${size} - s) / 2, s, s);
+    } else if (${JSON.stringify(mode)} === 'inset') {
       const s = ${size} * ${scale || 1};
       g.drawImage(img, (${size} - s) / 2, (${size} - s) / 2, s, s);
     } else {
