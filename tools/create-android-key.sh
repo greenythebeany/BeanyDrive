@@ -19,9 +19,13 @@ fi
 PASS=$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-28)
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+# Git Bash rewrites anything that looks like a Unix path when it calls a
+# Windows program — which mangles -subj — so path conversion is switched off
+# for that call, and the temp paths it needs are handed over in Windows form.
+if command -v cygpath >/dev/null; then TMPW=$(cygpath -m "$TMP"); else TMPW=$TMP; fi
 
 MSYS_NO_PATHCONV=1 openssl req -x509 -newkey rsa:4096 -sha256 -days 18250 -nodes \
-  -keyout "$TMP/key.pem" -out "$TMP/cert.pem" -subj "/CN=BeanyDrive/O=GreenyBeany" 2>/dev/null
+  -keyout "$TMPW/key.pem" -out "$TMPW/cert.pem" -subj "/CN=BeanyDrive/O=GreenyBeany" 2>/dev/null
 openssl pkcs12 -export -inkey "$TMP/key.pem" -in "$TMP/cert.pem" -name beanydrive \
   -out "$DIR/release.p12" -passout "pass:$PASS" \
   -keypbe AES-256-CBC -certpbe AES-256-CBC -macalg sha256
