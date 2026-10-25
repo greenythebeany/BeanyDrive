@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1932 1932" width="1932" height="1932">
+  <!-- BeanyDrive app icon. Source for icon.png, thumbnail.png and mobile/assets;
+       re-export with `npx electron tools/export-icons.js` after editing. -->
+  <defs>
+    <clipPath id="flat-bottom"><rect x="0" y="0" width="1932" height="1341"/></clipPath>
+  </defs>
+  <rect width="1932" height="1932" rx="340" fill="#000"/>
+  <g fill="#fff" clip-path="url(#flat-bottom)">
+    <circle cx="455" cy="1130" r="210"/>
+    <circle cx="710" cy="950" r="262"/>
+    <circle cx="1090" cy="975" r="390"/>
+    <circle cx="1450" cy="1090" r="251"/>
+    <rect x="455" y="930" width="995" height="411"/>
+  </g>
+  <circle cx="1428" cy="1090" r="218" fill="#f00"/>
+</svg>

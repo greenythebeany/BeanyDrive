@@ -1,8 +1,8 @@
 {
   "name": "beanydrive",
   "productName": "BeanyDrive",
-  "version": "1.0.3",
-  "description": "GreenyBeany's terminal-styled desktop client for Discord-backed cloud storage",
+  "version": "2.0.0",
+  "description": "GreenyBeany's desktop client for Discord-backed cloud storage",
   "main": "main.js",
   "private": true,
   "scripts": {
@@ -36,6 +36,11 @@
       "drag-cache.js"
     ],
     "icon": "icon.png",
+    "publish": {
+      "provider": "github",
+      "owner": "greenythebeany",
+      "repo": "BeanyDrive"
+    },
     "win": {
       "target": [
         "portable",

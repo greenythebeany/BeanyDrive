@@ -52,6 +52,36 @@ drive.on('ready', () => emit('update', drive.snapshot()));
 
 function pushUpdate() { emit('update', drive.snapshot()); }
 
+// --- updates --------------------------------------------------------------
+const RELEASES_URL = 'https://api.github.com/repos/greenythebeany/BeanyDrive/releases/latest';
+function parseSemver(str) {
+  const m = String(str || '').match(/(\d+)\.(\d+)\.(\d+)/);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+async function checkForUpdates() {
+  try {
+    const res = await nativeFetch(RELEASES_URL, { headers: { Accept: 'application/vnd.github+json' }, responseType: 'text' });
+    if (!res.ok) return { status: res.status === 404 ? 'up-to-date' : 'error' };
+    const release = JSON.parse(await res.text());
+    const latest = parseSemver(release.tag_name) || parseSemver(release.name);
+    const currentStr = (await App.getInfo().catch(() => ({ version: '0.0.0' }))).version;
+    const current = parseSemver(currentStr);
+    const diff = latest && current ? latest.findIndex((n, i) => n !== current[i]) : -1;
+    if (diff === -1 || latest[diff] < current[diff]) return { status: 'up-to-date', current: currentStr };
+    const apk = (release.assets || []).find((a) => /\.apk$/i.test(a.name));
+    return {
+      status: 'available', version: latest.join('.'), current: currentStr, notes: String(release.body || '').slice(0, 6000),
+      url: apk ? apk.browser_download_url : release.html_url, canInstall: false, size: apk ? apk.size : 0,
+    };
+  } catch (e) {
+    return { status: 'error', error: e.message };
+  }
+}
+// Quietly, once per launch, like the desktop build.
+setTimeout(() => {
+  checkForUpdates().then((r) => { if (r.status === 'available') emit('updateAvailable', r); }).catch(() => {});
+}, 5000);
+
 // --- settings -------------------------------------------------------------
 // The token lives in Preferences, which on Android is SharedPreferences —
 // readable by anyone with root or a backup of the app's data. That's weaker
@@ -133,7 +163,8 @@ async function downloadToDevice(fileId, name) {
 // The renderer is fed the same snapshot shape, so its rows work unchanged.
 let uploadSeq = 0;
 const uploadJobs = [];
-let pumping = false;
+const PARALLEL_FILES = 3;
+let runningJobs = 0;
 let statsTimer = null;
 
 function jobSnapshot(job) {
@@ -208,16 +239,18 @@ async function runJob(job) {
   pushUpdate();
 }
 
-async function pumpUploads() {
-  if (pumping) return;
-  pumping = true;
-  try {
-    for (;;) {
-      const job = uploadJobs.find((j) => j.state === 'queued');
-      if (!job) break;
-      await runJob(job);
-    }
-  } finally { pumping = false; }
+// Same as desktop: a few files at once, sharing the drive's chunk slots.
+function pumpUploads() {
+  while (runningJobs < PARALLEL_FILES) {
+    const job = uploadJobs.find((j) => j.state === 'queued');
+    if (!job) break;
+    runningJobs += 1;
+    job.state = 'running';
+    runJob(job).finally(() => {
+      runningJobs -= 1;
+      pumpUploads();
+    });
+  }
 }
 
 const findJob = (uploadId) => uploadJobs.find((j) => j.uploadId === uploadId) || null;
@@ -260,8 +293,12 @@ window.api = {
   isMobile: true,
 
   getAppVersion: async () => (await App.getInfo().catch(() => ({ version: 'dev' }))).version,
-  checkForUpdates: async () => ({ status: 'up-to-date' }), // APKs update out of band
-  onUpdateAvailable() {},
+  // An app can't replace its own APK silently, so Android only checks: the
+  // modal's button opens the release's APK in the browser, and Android's
+  // installer takes it from there.
+  checkForUpdates,
+  onUpdateAvailable: (cb) => on('updateAvailable', cb),
+  onUpdateProgress() {},
   // '_system' hands the URL to Android's default browser. @capacitor/browser
   // would give an in-app tab, but it pulls in androidx.browser for no gain here.
   openExternal: (url) => { if (/^https?:\/\//i.test(url)) window.open(url, '_system'); },
@@ -407,6 +444,9 @@ window.api = {
   createFolder: guarded((folderPath) => drive.createFolder(folderPath)),
   deleteFolder: guarded((folderPath) => drive.deleteFolder(folderPath)),
   refresh: guarded(() => drive.refresh()),
+  updateFiles: guarded((fileIds, patch) => drive.updateFiles(fileIds, patch)),
+  moveFiles: guarded((fileIds, destFolder) => drive.moveFiles(fileIds, destFolder)),
+  renameFolder: guarded((oldPath, newPath) => drive.renameFolder(oldPath, newPath)),
   emptyTrash: async () => {
     await ready;
     const taskId = `t${Date.now()}_${taskSeq++}`;

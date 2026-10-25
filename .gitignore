@@ -10,3 +10,6 @@ npm-debug.log*
 mobile/www/
 mobile/android/
 mobile/ios/
+
+# local code-graph cache (graphify)
+graphify-out/

@@ -48,10 +48,6 @@ if (!html.includes('mobile.css')) {
   html = html.replace('<link rel="stylesheet" href="style.css">',
     '<link rel="stylesheet" href="style.css">\n<link rel="stylesheet" href="mobile.css">');
 }
-// The desktop titlebar is Electron window chrome; there's nothing to minimise
-// or close on Android, and the status bar sits where it would be. mobile.css
-// carries the !important that actually beats .titlebar's display:flex.
-html = html.replace('<div class="titlebar">', '<div class="titlebar" hidden>');
 html = html.replace('<meta charset="utf-8">',
   '<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">');
 await writeFile(indexPath, html);

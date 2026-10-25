@@ -24,6 +24,9 @@ const SAFETY_BYTES = 256 * 1024;
 // Discord allows roughly 5 message creates per 5s per channel, so 4 keeps the
 // pool busy while leaving headroom before requests start bouncing off 429s.
 const DEFAULT_CONCURRENCY = 4;
+// Downloads aren't message creates, so they aren't held to that budget; the
+// limiter in discord-api still paces the per-chunk message lookups.
+const DOWNLOAD_CONCURRENCY = 6;
 // Unfinished uploads older than this are given up on: their chunks are deleted
 // and the resume record dropped, so abandoned attempts can't accumulate in the
 // channel forever.
@@ -95,6 +98,21 @@ class Mutex {
   }
 }
 
+// Caps chunk uploads in flight across every file being uploaded at once, so
+// parallel files share the concurrency setting instead of multiplying it (and
+// the chunks held in memory) by the number of files.
+class Semaphore {
+  constructor(n) { this.free = n; this.waiters = []; }
+  async acquire() {
+    if (this.free > 0) { this.free -= 1; return; }
+    await new Promise((resolve) => this.waiters.push(resolve));
+  }
+  release() {
+    const next = this.waiters.shift();
+    if (next) next(); else this.free += 1;
+  }
+}
+
 function normalizeMetadata(data) {
   const files = Array.isArray(data && data.files) ? data.files : [];
   return {
@@ -134,6 +152,9 @@ class DiscordDrive extends Emitter {
     this.metadataMessageId = null;
     this.status = 'disconnected';
     this._mutex = new Mutex();
+    this._chunkSlots = new Semaphore(DEFAULT_CONCURRENCY);
+    this._unsavedEntries = [];
+    this._pendingSave = null;
   }
 
   _withLock(fn) { return this._mutex.lock(fn); }
@@ -152,6 +173,7 @@ class DiscordDrive extends Emitter {
     this.channelId = String(channelId);
     this.chunkSizeMb = chunkSizeMb || 10;
     this.uploadConcurrency = Math.max(1, Math.min(8, uploadConcurrency || DEFAULT_CONCURRENCY));
+    this._chunkSlots = new Semaphore(this.uploadConcurrency);
     this.status = 'connecting';
     this.emit('status', 'Connecting...');
     try {
@@ -201,7 +223,9 @@ class DiscordDrive extends Emitter {
   }
 
   async saveMetadata() {
-    const raw = JSON.stringify(this.metadata, null, 2);
+    // Compact: this whole file is re-uploaded on every mutation, and
+    // indentation alone is roughly a third of its size on a big drive.
+    const raw = JSON.stringify(this.metadata);
     const form = new FormData();
     form.set('payload_json', JSON.stringify({ content: METADATA_MARKER }));
     form.set('files[0]', new Blob([raw], { type: 'application/json' }), METADATA_FILENAME);
@@ -305,17 +329,30 @@ class DiscordDrive extends Emitter {
       throw err;
     }
 
-    return this._withLock(async () => {
-      const entry = {
-        id: fileId, name, size, chunks: chunkIds, created: Date.now() / 1000,
-        path: dest, tags: [], starred: false, trashed: false,
-      };
-      this.metadata.files.push(entry);
-      await this.saveMetadata();
-      // The chunks belong to metadata now — they're no longer loose parts.
-      if (key && this.resumeStore) this.resumeStore.delete(key);
-      return entry;
-    });
+    const entry = {
+      id: fileId, name, size, chunks: chunkIds, created: Date.now() / 1000,
+      path: dest, tags: [], starred: false, trashed: false,
+    };
+    await this._commitNewEntry(entry);
+    // The chunks belong to metadata now — they're no longer loose parts.
+    if (key && this.resumeStore) this.resumeStore.delete(key);
+    return entry;
+  }
+
+  // Finished uploads join whichever metadata save hasn't started yet, so files
+  // finishing together (parallel uploads, a batch of small files) share one
+  // save — three message requests — instead of paying for one each. The
+  // entries are merged inside the lock, so a refresh can't drop them.
+  _commitNewEntry(entry) {
+    this._unsavedEntries.push(entry);
+    if (!this._pendingSave) {
+      this._pendingSave = this._withLock(async () => {
+        this._pendingSave = null;
+        this.metadata.files.push(...this._unsavedEntries.splice(0));
+        await this.saveMetadata();
+      });
+    }
+    return this._pendingSave;
   }
 
   // Runs up to `uploadConcurrency` chunk POSTs at a time, filling a
@@ -364,11 +401,18 @@ class DiscordDrive extends Emitter {
           const idx = nextIdx++;
           if (idx >= total) return;
           if (chunkIds[idx]) continue; // already uploaded by an earlier attempt
+          const slots = this._chunkSlots;
           try {
             checkStopped();
-            const start = idx * this.chunkSize;
-            const data = await reader.read(start, Math.min(this.chunkSize, size - start));
-            recordChunk(idx, await this._sendChunk(fileId, idx, total, name, data, false, control.signal));
+            await slots.acquire();
+            try {
+              checkStopped();
+              const start = idx * this.chunkSize;
+              const data = await reader.read(start, Math.min(this.chunkSize, size - start));
+              recordChunk(idx, await this._sendChunk(fileId, idx, total, name, data, false, control.signal));
+            } finally {
+              slots.release();
+            }
           } catch (err) {
             if (!failure) failure = err;
             return;
@@ -488,17 +532,37 @@ class DiscordDrive extends Emitter {
     return this.metadata.files.find((f) => f.id === fileId) || null;
   }
 
+  // Fetches up to DOWNLOAD_CONCURRENCY chunks at once but hands them to
+  // `onChunk` strictly in order, so a download streams to disk as before while
+  // never holding more than that many chunks in memory. Each chunk is two
+  // round trips (message lookup, then the CDN), so one at a time spent most of
+  // its time waiting.
+  async _fetchChunksInOrder(entry, onChunk, onProgress) {
+    const total = entry.chunks.length;
+    const limit = Math.max(1, Math.min(DOWNLOAD_CONCURRENCY, total));
+    const pending = [];
+    let started = 0;
+    const startNext = () => {
+      const p = this._fetchChunkBytes(entry.chunks[started++]);
+      p.catch(() => {}); // awaited below in order; this only stops an early failure being reported as unhandled
+      pending.push(p);
+    };
+    while (started < total && pending.length < limit) startNext();
+    for (let i = 0; i < total; i++) {
+      const bytes = await pending.shift();
+      if (started < total) startNext();
+      await onChunk(bytes, i);
+      if (onProgress) onProgress(i + 1, total);
+    }
+  }
+
   async download(fileId, destPath, onProgress) {
     this._ensureReady();
     const entry = this.getEntry(fileId);
     if (!entry) throw new Error(`File ${fileId} not in metadata`);
-    const total = entry.chunks.length;
     const writer = await this.files.createWriter(destPath);
     try {
-      for (let i = 0; i < total; i++) {
-        await writer.write(await this._fetchChunkBytes(entry.chunks[i]));
-        if (onProgress) onProgress(i + 1, total);
-      }
+      await this._fetchChunksInOrder(entry, (bytes) => writer.write(bytes), onProgress);
     } finally {
       await writer.close();
     }
@@ -513,12 +577,8 @@ class DiscordDrive extends Emitter {
     this._ensureReady();
     const entry = this.getEntry(fileId);
     if (!entry) throw new Error(`File ${fileId} not in metadata`);
-    const total = entry.chunks.length;
     const parts = [];
-    for (let i = 0; i < total; i++) {
-      parts.push(await this._fetchChunkBytes(entry.chunks[i]));
-      if (onProgress) onProgress(i + 1, total);
-    }
+    await this._fetchChunksInOrder(entry, (bytes) => { parts.push(bytes); }, onProgress);
     return concatChunks(parts);
   }
 
@@ -627,6 +687,65 @@ class DiscordDrive extends Emitter {
     });
   }
 
+  // ---- batch -------------------------------------------------------
+  // Every single-file mutation above re-uploads the metadata file (three
+  // Discord requests). Acting on a selection through those would pay that per
+  // file, so these apply the whole selection and save once.
+
+  // Only the starred/trashed flags; trashing also unstars, as trashFile does.
+  async updateFiles(fileIds, patch) {
+    return this._withLock(async () => {
+      const ids = new Set(fileIds);
+      let changed = 0;
+      for (const entry of this.metadata.files) {
+        if (!ids.has(entry.id)) continue;
+        if ('trashed' in patch) { entry.trashed = !!patch.trashed; if (entry.trashed) entry.starred = false; }
+        if ('starred' in patch && !entry.trashed) entry.starred = !!patch.starred;
+        changed += 1;
+      }
+      if (changed) await this.saveMetadata();
+      return changed;
+    });
+  }
+
+  async moveFiles(fileIds, destFolder) {
+    return this._withLock(async () => {
+      const ids = new Set(fileIds);
+      const dest = normalizePath(destFolder);
+      let changed = 0;
+      for (const entry of this.metadata.files) {
+        if (!ids.has(entry.id) || entry.path === dest) continue;
+        entry.path = dest;
+        changed += 1;
+      }
+      if (dest && !this.metadata.folders.includes(dest)) this.metadata.folders.push(dest);
+      if (changed) await this.saveMetadata();
+      return changed;
+    });
+  }
+
+  // Metadata only: chunks don't know which folder they're in.
+  async renameFolder(oldPath, newPath) {
+    return this._withLock(async () => {
+      const from = normalizePath(oldPath);
+      const to = normalizePath(newPath);
+      if (!from || !to) throw new Error('Cannot rename root');
+      if (from === to) return 0;
+      if (to.startsWith(`${from}/`)) throw new Error('Cannot move a folder inside itself');
+      const prefix = `${from}/`;
+      const remap = (p) => (p === from ? to : (p.startsWith(prefix) ? to + p.slice(from.length) : p));
+      let changed = 0;
+      for (const entry of this.metadata.files) {
+        const next = remap(entry.path);
+        if (next !== entry.path) { entry.path = next; changed += 1; }
+      }
+      this.metadata.folders = [...new Set(this.metadata.folders.map(remap))];
+      if (!this.metadata.folders.includes(to)) this.metadata.folders.push(to);
+      await this.saveMetadata();
+      return changed;
+    });
+  }
+
   // ---- folders -------------------------------------------------------
 
   async createFolder(folderPath) {
@@ -670,5 +789,5 @@ class DiscordDrive extends Emitter {
 module.exports = {
   DiscordDrive,
   UploadCanceled, UploadPaused, isCancelError, isPauseError,
-  DEFAULT_CONCURRENCY, RESUME_MAX_AGE_MS, METADATA_FILENAME, METADATA_MARKER,
+  DEFAULT_CONCURRENCY, DOWNLOAD_CONCURRENCY, RESUME_MAX_AGE_MS, METADATA_FILENAME, METADATA_MARKER,
 };

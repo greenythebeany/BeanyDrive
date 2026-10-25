@@ -43,14 +43,55 @@ async function responseError(res) {
   return err;
 }
 
+// Discord rate-limits per route, where a route is the method plus the path with
+// its major parameter (the channel) kept and every other id collapsed. Message
+// ids differ on every chunk but all share one bucket.
+function routeKey(method, pathname) {
+  const path = pathname.split('?')[0].replace(/\d{15,}/g, (id, off) => (off === '/channels/'.length && pathname.startsWith('/channels/') ? id : ':id'));
+  return `${method} ${path}`;
+}
+
 function createApi({ fetchImpl } = {}) {
   const doFetch = fetchImpl || ((...args) => fetch(...args));
 
+  // Waits for a route whose bucket is spent before sending, using the
+  // X-RateLimit headers of the previous response. Parallel chunk workers then
+  // queue up client-side instead of firing into a 429 and backing off blind —
+  // Discord counts repeated 429s against the bot, and a blind retry waits
+  // longer than the bucket actually needed.
+  const blockedUntil = new Map(); // route → epoch ms
+  let globalUntil = 0;
+
+  async function waitForRoute(route) {
+    for (;;) {
+      const until = Math.max(globalUntil, blockedUntil.get(route) || 0);
+      const wait = until - Date.now();
+      if (wait <= 0) return;
+      await sleep(wait + 25);
+    }
+  }
+
+  function noteLimits(route, res) {
+    const remaining = res.headers.get('x-ratelimit-remaining');
+    const resetAfter = parseFloat(res.headers.get('x-ratelimit-reset-after'));
+    if (remaining !== null && Number(remaining) <= 0 && Number.isFinite(resetAfter)) {
+      blockedUntil.set(route, Date.now() + Math.ceil(resetAfter * 1000));
+    }
+  }
+
   async function request(token, pathname, opts = {}) {
     const headers = Object.assign({ Authorization: `Bot ${token}` }, opts.headers || {});
+    const route = routeKey(opts.method || 'GET', pathname);
     let attempt = 0;
     for (;;) {
+      await waitForRoute(route);
+      if (opts.signal && opts.signal.aborted) {
+        const err = new Error('The operation was aborted');
+        err.name = 'AbortError';
+        throw err;
+      }
       const res = await doFetch(`${API_BASE}${pathname}`, { ...opts, headers });
+      noteLimits(route, res);
       if (res.status === 429) {
         attempt += 1;
         // Read the body before deciding, so it's drained either way — a 429 whose
@@ -63,7 +104,9 @@ function createApi({ fetchImpl } = {}) {
           err.body = text.slice(0, 200);
           throw err;
         }
-        await sleep(Math.ceil((data.retry_after || 1) * 1000));
+        const retryMs = Math.ceil((data.retry_after || 1) * 1000);
+        if (data.global) globalUntil = Date.now() + retryMs;
+        else blockedUntil.set(route, Date.now() + retryMs);
         continue;
       }
       if (!res.ok) throw await responseError(res);
