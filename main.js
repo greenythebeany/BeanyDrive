@@ -54,7 +54,11 @@ function createWindow() {
     height: 900,
     minWidth: 920,
     minHeight: 580,
-    frame: false,
+    // Frameless everywhere, but macOS keeps its own traffic lights inset into
+    // the app bar (the renderer hides its drawn buttons there and makes room).
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 17 } }
+      : { frame: false }),
     show: false,
     backgroundColor: '#0b0b0c',
     icon: path.join(__dirname, 'icon.png'),

@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('api', {
   maximize: () => ipcRenderer.send('window:maximize'),
   close: () => ipcRenderer.send('window:close'),
   onWindowState: (cb) => ipcRenderer.on('window:state', (e, state) => cb(state)),
+  platform: process.platform,
 
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
   checkForUpdates: () => ipcRenderer.invoke('update:check'),

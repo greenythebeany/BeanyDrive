@@ -38,6 +38,10 @@ let lastRelease = null;
 
 // GitHub turns the spaces in "BeanyDrive Setup 2.0.0.exe" into dots.
 function pickAsset(assets) {
+  // macOS: the .dmg built for this Mac's architecture (BeanyDrive-2.0.1-arm64.dmg).
+  if (process.platform === 'darwin') {
+    return assets.find((a) => new RegExp(`-${process.arch}\\.dmg$`, 'i').test(a.name)) || null;
+  }
   if (process.platform !== 'win32') return null;
   if (portableExe()) return assets.find((a) => /\.exe$/i.test(a.name) && !/setup/i.test(a.name)) || null;
   return assets.find((a) => /setup.*\.exe$/i.test(a.name)) || null;
@@ -57,7 +61,7 @@ async function checkForUpdates() {
 
   const assets = release.assets || [];
   const asset = pickAsset(assets);
-  const yml = assets.find((a) => a.name === 'latest.yml');
+  const yml = assets.find((a) => a.name === (process.platform === 'darwin' ? 'latest-mac.yml' : 'latest.yml'));
   lastRelease = { asset, yml, version: latest.join('.') };
 
   return {
@@ -70,6 +74,7 @@ async function checkForUpdates() {
     // otherwise the UI falls back to the release page link.
     canInstall: app.isPackaged && !!asset,
     portable: !!portableExe(),
+    platform: process.platform,
     size: (asset && asset.size) || 0,
   };
 }
@@ -153,9 +158,15 @@ async function downloadUpdate(onProgress) {
 // Starts the installer (or the new portable exe) detached, then hands off to
 // `shutdown`, which must fully close BeanyDrive so nothing of it is still
 // running — or holding files open — when the installer gets going.
+//
+// On macOS there's no installer to run: the .dmg is opened in Finder, where
+// dragging BeanyDrive onto Applications replaces the old copy once this one
+// has quit.
 function installAndQuit(file, shutdown) {
   if (!file || !fs.existsSync(file)) throw new Error('Update file is missing');
-  const child = spawn(file, [], { detached: true, stdio: 'ignore', cwd: path.dirname(file) });
+  const child = process.platform === 'darwin'
+    ? spawn('open', [file], { detached: true, stdio: 'ignore' })
+    : spawn(file, [], { detached: true, stdio: 'ignore', cwd: path.dirname(file) });
   child.unref();
   setTimeout(shutdown, 300);
 }
