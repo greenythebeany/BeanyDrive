@@ -1,16 +1,18 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1932 1932" width="1932" height="1932">
-  <!-- BeanyDrive app icon. Source for icon.png, thumbnail.png and mobile/assets;
-       re-export with `npx electron tools/export-icons.js` after editing. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- BeanyDrive app icon. Source for icon.png, thumbnail.png, the Mac icon and
+       mobile/assets; re-export with `npx electron tools/export-icons.js` after
+       editing. Shapes were fitted to the hand-made PNG (each within 1px). -->
   <defs>
-    <clipPath id="flat-bottom"><rect x="0" y="0" width="1932" height="1341"/></clipPath>
+    <clipPath id="flat-bottom"><rect x="0" y="0" width="1024" height="755"/></clipPath>
   </defs>
-  <rect width="1932" height="1932" rx="340" fill="#000"/>
+  <!-- Rounded square with continuous (squircle-like) corners. -->
+  <path id="tile" fill="#000" d="M185 0H839C937 0 1024 87 1024 185V839C1024 937 937 1024 839 1024H185C87 1024 0 937 0 839V185C0 87 87 0 185 0Z"/>
   <g fill="#fff" clip-path="url(#flat-bottom)">
-    <circle cx="455" cy="1130" r="210"/>
-    <circle cx="710" cy="950" r="262"/>
-    <circle cx="1090" cy="975" r="390"/>
-    <circle cx="1450" cy="1090" r="251"/>
-    <rect x="455" y="930" width="995" height="411"/>
+    <circle cx="180" cy="619.7" r="135.3"/>
+    <circle cx="344.3" cy="497.2" r="165.6"/>
+    <circle cx="591.4" cy="506.4" r="243.3"/>
+    <ellipse cx="826" cy="592" rx="157.5" ry="164"/>
+    <rect x="180" y="506" width="646" height="249"/>
   </g>
-  <circle cx="1428" cy="1090" r="218" fill="#f00"/>
+  <circle cx="823.1" cy="592.2" r="135.5" fill="#f00"/>
 </svg>

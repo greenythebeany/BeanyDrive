@@ -63,9 +63,11 @@ app.whenReady().then(async () => {
     // black square. The foreground is also re-framed on the cloud: centred,
     // two thirds of the layer wide, since the launcher insets the layer by
     // 16.7% a side and masks it to its own shape.
-    const noTile = svg.replace(/<rect width="1932"[^>]*\/>/, '');
+    const noTile = svg.replace(/<path id="tile"[^>]*\/>/, '');
     let source = o.file.endsWith('splash.png') ? noTile : svg;
-    if (o.svg === 'symbol') source = noTile.replace('viewBox="0 0 1932 1932"', 'viewBox="-130 -140 2206 2206"');
+    // The cloud spans x 45–984, y 263–755 in icon.svg: centre (514.5, 509),
+    // width 939. A square view 939 / 0.66 = 1423 wide around that centre.
+    if (o.svg === 'symbol') source = noTile.replace('viewBox="0 0 1024 1024"', 'viewBox="-197 -202.5 1423 1423"');
     if (o.svg === 'none') source = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1" width="1" height="1"></svg>';
     const b64 = await win.webContents.executeJavaScript(renderer(source, o.size, o.mode, o.scale));
     fs.mkdirSync(path.dirname(path.join(root, o.file)), { recursive: true });
