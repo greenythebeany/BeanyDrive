@@ -1,6 +1,6 @@
 {
   "name": "beanydrive-mobile",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "private": true,
   "description": "Android build of BeanyDrive, sharing core/ with the desktop app",
   "scripts": {
