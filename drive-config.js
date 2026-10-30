@@ -69,4 +69,27 @@ function saveSettings({ token, channelId, chunkSizeMb, uploadConcurrency }) {
   return publicSettings();
 }
 
-module.exports = { publicSettings, getToken, saveSettings };
+// The drive's encryption key for this device, one file per channel, protected
+// the same way as the bot token.
+function keyStore(channelId) {
+  const safe = String(channelId || '').replace(/[^0-9]/g, '');
+  return createTokenStore(path.join(app.getPath('userData'), `drive-key-${safe}.enc`));
+}
+const getDriveKey = (channelId) => (channelId ? keyStore(channelId).read() : null);
+const saveDriveKey = (channelId, b64) => keyStore(channelId).save(b64);
+const clearDriveKey = (channelId) => keyStore(channelId).clear();
+
+// Per device: whether new uploads are encrypted once the drive is unlocked.
+function getEncryptUploads() {
+  return readConfig().encryptUploads !== false;
+}
+function setEncryptUploads(value) {
+  const cfg = readConfig();
+  cfg.encryptUploads = !!value;
+  writeConfig(cfg);
+}
+
+module.exports = {
+  publicSettings, getToken, saveSettings,
+  getDriveKey, saveDriveKey, clearDriveKey, getEncryptUploads, setEncryptUploads,
+};

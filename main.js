@@ -9,6 +9,7 @@ const { checkForUpdates, downloadUpdate, installAndQuit } = require('./update-ch
 const { createResumeStore } = require('./upload-resume');
 const { createRateTracker } = require('./upload-stats');
 const { createDragCache } = require('./drag-cache');
+const { rangeResponse } = require('./core/stream');
 
 const PREVIEW_MAX_BYTES = 500 * 1024 * 1024;
 
@@ -39,7 +40,17 @@ function pushStatus(message) {
 
 drive.on('status', (msg) => pushStatus(msg));
 drive.on('error', (err) => pushStatus(`Error: ${err.message}`));
-drive.on('ready', () => {
+drive.on('ready', async () => {
+  // Unlocks with this device's stored key before the first snapshot goes out,
+  // so encrypted files don't flash up as locked.
+  drive.encryptUploads = driveConfig.getEncryptUploads();
+  const stored = driveConfig.getDriveKey(drive.channelId);
+  if (stored) {
+    const ok = await drive.unlockWithStoredKey(stored).catch(() => false);
+    if (!ok) driveConfig.clearDriveKey(drive.channelId);
+  } else {
+    drive.lock();
+  }
   if (mainWindow) mainWindow.webContents.send('drive:update', drive.snapshot());
   sweepAbandonedUploads();
 });
@@ -103,6 +114,7 @@ app.whenReady().then(() => {
   const legalRoot = path.join(__dirname, 'docs', 'legal');
   protocol.handle('app', (request) => {
     const url = new URL(request.url);
+    if (url.pathname.startsWith('/stream/')) return streamFile(request, decodeURIComponent(url.pathname.slice('/stream/'.length)));
     // app://bundle/<path> -> renderer/<path> ; app://bundle/ -> renderer/index.html
     // app://bundle/legal/<doc>.md -> docs/legal/<doc>.md, so the in-app Legal
     // pages are the same files as the ones in the repository.
@@ -305,10 +317,10 @@ async function runJob(job) {
     if (job.isDirectory) {
       await drive.uploadFolder(job.localPath, job.destFolder, onProgress, control);
     } else {
-      await drive.upload(job.localPath, job.destFolder, onProgress, control);
+      job.entry = await drive.upload(job.localPath, job.destFolder, onProgress, control);
     }
     removeJob(job);
-    send('drive:uploadDone', { uploadId: job.uploadId, name: job.name, ok: true });
+    send('drive:uploadDone', { uploadId: job.uploadId, name: job.name, ok: true, deduplicated: job.entry && job.entry.deduplicated });
   } catch (err) {
     if (isPauseError(err)) {
       // Chunks and resume record intentionally left in place.
@@ -547,6 +559,86 @@ ipcMain.handle('drive:preview', async (e, { fileId }) => {
     return { ok: false, error: err.message };
   }
 });
+
+// --- streaming (video and audio) ---
+// app://bundle/stream/<file id> answers Range requests from the chunks that
+// cover them, so a <video> starts playing, and seeks, without the whole file
+// being downloaded first. Same origin as the page, so frames can be drawn to a
+// canvas for thumbnails.
+async function streamFile(request, fileId) {
+  if (drive.status !== 'connected') return new Response('Not connected', { status: 503 });
+  const entry = drive.getEntry(fileId);
+  // Chromium plays H.264 .mov files when they're labelled as MP4.
+  const type = entry ? guessMime(entry.name).replace('video/quicktime', 'video/mp4') : 'application/octet-stream';
+  return rangeResponse(drive, fileId, request.headers.get('range'), type);
+}
+
+// --- security: encryption ---
+function securityHandler(fn) {
+  return async (e, args) => {
+    try {
+      requireConnected();
+      await fn(args || {});
+      pushUpdate();
+      return { ok: true, encryption: drive.encryptionState() };
+    } catch (err) {
+      return { ok: false, error: err.message, encryption: drive.encryptionState() };
+    }
+  };
+}
+ipcMain.handle('security:setup', securityHandler(async ({ passphrase }) => {
+  driveConfig.saveDriveKey(drive.channelId, await drive.setupEncryption(passphrase));
+}));
+ipcMain.handle('security:unlock', securityHandler(async ({ passphrase }) => {
+  driveConfig.saveDriveKey(drive.channelId, await drive.unlock(passphrase));
+}));
+ipcMain.handle('security:lock', securityHandler(async () => {
+  drive.lock();
+  driveConfig.clearDriveKey(drive.channelId);
+}));
+ipcMain.handle('security:changePassphrase', securityHandler(({ passphrase }) => drive.changePassphrase(passphrase)));
+ipcMain.handle('security:setEncryptUploads', securityHandler(({ value }) => {
+  driveConfig.setEncryptUploads(value);
+  drive.encryptUploads = !!value;
+}));
+
+// --- integrity check and index backups ---
+ipcMain.handle('drive:check', async () => {
+  try {
+    requireConnected();
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+  const taskId = `t${Date.now()}_${taskSeq++}`;
+  const label = 'Checking drive';
+  send('drive:taskProgress', { taskId, label, progress: 0, detail: 'reading the channel…' });
+  try {
+    const report = await drive.checkDrive((seen) => {
+      send('drive:taskProgress', { taskId, label, progress: 50, detail: `${seen} messages read` });
+    });
+    send('drive:taskDone', { taskId, ok: true, message: 'Drive check finished' });
+    return { ok: true, report };
+  } catch (err) {
+    send('drive:taskDone', { taskId, ok: false, message: `Check failed: ${err.message}` });
+    return { ok: false, error: err.message };
+  }
+});
+function repairHandler(fn) {
+  return async (e, args) => {
+    try {
+      requireConnected();
+      const count = await fn(args || {});
+      pushUpdate();
+      return { ok: true, count };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  };
+}
+ipcMain.handle('drive:recoverOrphans', repairHandler(({ fileIds }) => drive.recoverOrphans(fileIds)));
+ipcMain.handle('drive:deleteOrphans', repairHandler(({ fileIds }) => drive.deleteOrphans(fileIds)));
+ipcMain.handle('drive:removeBroken', repairHandler(({ fileIds }) => drive.removeBroken(fileIds)));
+ipcMain.handle('drive:restoreBackup', repairHandler(({ messageId }) => drive.restoreBackup(messageId)));
 
 // --- mutations ---
 function wrapMutation(fn) {

@@ -12,25 +12,30 @@ This document is also available inside the app, under **Settings → About → L
 
 **Everything you upload is stored on Discord.** Files are split into chunks and posted as attachments in the channel you configured, by the bot you configured. The list of your files, folders, tags and stars (the "index") is a JSON file pinned in that same channel.
 
-- **BeanyDrive does not encrypt your files.** They're stored on Discord's servers as you uploaded them, readable by anyone who can read that channel (members of the server with access to it, other bots in it) and by Discord itself.
+- **Unless you turn on encryption, BeanyDrive doesn't encrypt your files.** They're stored on Discord's servers as you uploaded them, readable by anyone who can read that channel (members of the server with access to it, other bots in it) and by Discord itself.
+- **With encryption on** (Settings → Security), file contents are encrypted on your device (AES-256-GCM) before upload, so the channel only holds scrambled chunks. The file index (names, folders, sizes, dates, tags) is **not** encrypted and stays readable to anyone who can read the channel. The key is protected by your passphrase, which never leaves your devices; nobody, including the developer, can recover it.
 - Your use of Discord is governed by [Discord's Terms of Service](https://discord.com/terms) and [Privacy Policy](https://discord.com/privacy). Discord can remove content or accounts under those terms.
-- Don't store anything in BeanyDrive that you couldn't accept someone else reading. If you need confidentiality, encrypt files yourself before uploading them.
+- Without encryption on, don't store anything in BeanyDrive that you couldn't accept someone else reading.
+- **Earlier copies of the index** are kept in the channel as backups (the newest 10), so you can restore one. **Duplicate detection** stores a fingerprint (hash) of each file's contents in the index; with encryption on, the fingerprint is mixed with your drive's key, so it can't be matched against a known file.
 
 ## Data that stays on your device
 
 **Desktop (Windows, macOS, Linux).** These live in BeanyDrive's app-data folder: `%APPDATA%\BeanyDrive` on Windows, `~/Library/Application Support/BeanyDrive` on macOS, `~/.config/BeanyDrive` on Linux.
 
 - **Your bot token**, in `bot-token.enc`. It's encrypted with your operating system's protection (Electron `safeStorage`: Windows DPAPI, the macOS Keychain, or the Linux Secret Service). If your system offers no such encryption, it's stored as plain text instead.
-- **Connection settings** (channel ID, chunk size, parallel uploads), in `drive-config.json`.
+- **Connection settings** (channel ID, chunk size, parallel uploads, whether to encrypt uploads), in `drive-config.json`.
+- **The drive's encryption key**, if you unlocked an encrypted drive on this device, in `drive-key-<channel id>.enc`, protected the same way as the bot token.
 - **Resume records** for unfinished uploads, in `uploads-resume.json`. Each holds the local file path, its size and the IDs of the chunks already uploaded. Records nobody resumes within 7 days are deleted, along with their chunks in Discord.
 - **Drag-out copies** of files you dragged from BeanyDrive to your desktop, in the `drag-cache` folder. They're capped at 2 GB, and copies older than 7 days are removed.
 - **Interface preferences** (style, theme, accent, sort order, view, custom tag names), in the app's local storage.
 
 **Android.**
 
-- **Your bot token and settings** are stored with Android's app preferences. They're not encrypted beyond what Android itself provides, so they're readable by anyone with root access to the phone, or with an unencrypted backup of the app's data.
+- **Your bot token, settings and the drive's encryption key** (if unlocked on the phone) are stored with Android's app preferences. They're not encrypted beyond what Android itself provides, so they're readable by anyone with root access to the phone, or with an unencrypted backup of the app's data.
+- **Downloads** are saved to the phone's shared storage: photos to Pictures/BeanyDrive, videos to Movies/BeanyDrive, music to Music/BeanyDrive, everything else to Download/BeanyDrive. Other apps with access to those folders can see them.
+- **Camera backup**, if you turn it on, reads new photos and videos from the camera folder (with the photo and video permission you grant) and uploads them to your channel while the app is open. It's off until you enable it.
+- **Files shared to BeanyDrive** from another app are read only to upload them, after you confirm.
 - **Interface preferences** are stored the same way as on desktop.
-- **Downloads** go wherever you choose to save or share them.
 
 **Thumbnails** of your images and PDFs are kept on your device, in the app's own storage (the app-data folder above on desktop, the app's data on Android), so they don't have to be downloaded from Discord again. They're small, downscaled pictures, and only for files up to 25 MB. Remove them with **Settings → Appearance → Clear thumbnail cache**, or stop them being made by turning off **Load thumbnails as you scroll**. Past 3,000 thumbnails, the oldest are deleted.
 

@@ -13,10 +13,16 @@
 // unlike reads there's no browser API that would do better here.
 
 const { Filesystem, Directory } = require('@capacitor/filesystem');
-const { bytesToBase64 } = require('./capacitor-http');
+const { registerPlugin } = require('@capacitor/core');
+const { bytesToBase64, base64ToBytes } = require('./capacitor-http');
+
+// mobile/native/BeanyNativePlugin.java
+const BeanyNative = registerPlugin('BeanyNative');
 
 const HANDLE_PREFIX = 'picked:';
+const NATIVE_PREFIX = 'native:';
 const picked = new Map(); // handle -> File
+const native = new Map(); // handle -> { uri, name, size, mtimeMs } (shared files, camera backup)
 let seq = 0;
 
 // Registering a File returns the string the core will treat as its path.
@@ -26,8 +32,16 @@ function registerFile(file) {
   return handle;
 }
 
+// A content URI from another app (Share to BeanyDrive) or the gallery
+// (camera backup), read through the native plugin rather than a File.
+function registerNative({ uri, name, size, mtimeMs }) {
+  const handle = `${NATIVE_PREFIX}${seq++}:${name}`;
+  native.set(handle, { uri, name, size, mtimeMs: mtimeMs || 0 });
+  return handle;
+}
+
 function isHandle(value) {
-  return typeof value === 'string' && value.startsWith(HANDLE_PREFIX);
+  return typeof value === 'string' && (value.startsWith(HANDLE_PREFIX) || value.startsWith(NATIVE_PREFIX));
 }
 
 function getFile(handle) {
@@ -36,12 +50,47 @@ function getFile(handle) {
   return file;
 }
 
+function getNative(handle) {
+  const item = native.get(handle);
+  if (!item) throw new Error('That file is no longer available — share it again');
+  return item;
+}
+
 function forgetFile(handle) {
   picked.delete(handle);
+  native.delete(handle);
+}
+
+// Where a download is written: { device: true, name, mime } goes to the
+// phone's Downloads / Pictures / Movies through MediaStore; anything else is a
+// Filesystem { path, directory } target.
+async function createDeviceWriter(dest) {
+  const { id } = await BeanyNative.createDownload({ name: dest.name, mime: dest.mime || 'application/octet-stream' });
+  let finished = false;
+  const writer = {
+    target: dest,
+    write: (bytes) => BeanyNative.appendDownload({ id, data: bytesToBase64(bytes) }),
+    async close() {
+      if (finished) return;
+      finished = true;
+      writer.result = await BeanyNative.finishDownload({ id });
+      dest.result = writer.result;
+    },
+    async abort() {
+      if (finished) return;
+      finished = true;
+      await BeanyNative.abortDownload({ id }).catch(() => {});
+    },
+  };
+  return writer;
 }
 
 const capacitorFiles = {
   async stat(localPath) {
+    if (localPath.startsWith(NATIVE_PREFIX)) {
+      const n = getNative(localPath);
+      return { size: n.size, mtimeMs: n.mtimeMs, name: n.name, isDirectory: false };
+    }
     const file = getFile(localPath);
     return {
       size: file.size,
@@ -54,6 +103,16 @@ const capacitorFiles = {
   },
 
   async openReader(localPath) {
+    if (localPath.startsWith(NATIVE_PREFIX)) {
+      const { uri } = getNative(localPath);
+      return {
+        async read(offset, length) {
+          const { data } = await BeanyNative.readRange({ uri, offset, length });
+          return base64ToBytes(data);
+        },
+        async close() {},
+      };
+    }
     const file = getFile(localPath);
     return {
       async read(offset, length) {
@@ -68,6 +127,7 @@ const capacitorFiles = {
   // the directory alongside a relative path, and a bare path with no directory
   // silently writes somewhere unhelpful.
   async createWriter(dest) {
+    if (dest && dest.device) return createDeviceWriter(dest);
     const target = typeof dest === 'string' ? { path: dest, directory: Directory.Cache } : dest;
     await Filesystem.writeFile({ ...target, data: '', recursive: true });
     return {
@@ -82,4 +142,4 @@ const capacitorFiles = {
   // clear error rather than this returning something half-right.
 };
 
-module.exports = { capacitorFiles, registerFile, isHandle, getFile, forgetFile };
+module.exports = { capacitorFiles, registerFile, registerNative, isHandle, getFile, forgetFile, BeanyNative };

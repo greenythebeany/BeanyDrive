@@ -69,4 +69,21 @@ contextBridge.exposeInMainWorld('api', {
   updateFiles: (fileIds, patch) => ipcRenderer.invoke('drive:updateFiles', { fileIds, patch }),
   moveFiles: (fileIds, destFolder) => ipcRenderer.invoke('drive:moveFiles', { fileIds, destFolder }),
   renameFolder: (oldPath, newPath) => ipcRenderer.invoke('drive:renameFolder', { oldPath, newPath }),
+
+  // Video/audio play from this URL, fetched by range as they play.
+  streamUrl: (fileId) => `app://bundle/stream/${encodeURIComponent(fileId)}`,
+
+  // Encryption. Each returns { ok, error?, encryption }.
+  setupEncryption: (passphrase) => ipcRenderer.invoke('security:setup', { passphrase }),
+  unlockDrive: (passphrase) => ipcRenderer.invoke('security:unlock', { passphrase }),
+  lockDrive: () => ipcRenderer.invoke('security:lock'),
+  changePassphrase: (passphrase) => ipcRenderer.invoke('security:changePassphrase', { passphrase }),
+  setEncryptUploads: (value) => ipcRenderer.invoke('security:setEncryptUploads', { value }),
+
+  // Integrity check, repair and index backups.
+  checkDrive: () => ipcRenderer.invoke('drive:check'),
+  recoverOrphans: (fileIds) => ipcRenderer.invoke('drive:recoverOrphans', { fileIds }),
+  deleteOrphans: (fileIds) => ipcRenderer.invoke('drive:deleteOrphans', { fileIds }),
+  removeBroken: (fileIds) => ipcRenderer.invoke('drive:removeBroken', { fileIds }),
+  restoreBackup: (messageId) => ipcRenderer.invoke('drive:restoreBackup', { messageId }),
 });

@@ -566,6 +566,32 @@ button.crumb:hover { background: var(--bg-hover); color: var(--text); }
 .tr-row.failed .tr-sub { color: var(--err); }
 .tr-speed { color: var(--text-3); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
+/* drive health, storage overview */
+.health-modal .modal-card { width: min(720px, 100%); display: flex; flex-direction: column; max-height: calc(100vh - 48px); }
+.health-body { overflow-y: auto; min-height: 0; flex: 1; padding-right: 6px; }
+.health-body h3 { font-size: 13px; font-weight: 800; margin: 18px 0 8px; }
+.health-body h3:first-child { margin-top: 0; }
+.health-body h4 { font-size: 12.5px; margin: 16px 0 4px; }
+.health-body .settings-row { margin-top: 10px; }
+.health-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; min-width: 0; }
+.health-row .grow { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.health-row .grow > div:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.health-row .hint { margin: 0; }
+.stat-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+.stat-tile { background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--r); padding: 10px 12px; }
+.stat-tile .hint { margin: 2px 0 0; }
+.stat-k { font-size: 11.5px; color: var(--text-3); font-weight: 600; }
+.stat-v { font-size: 17px; font-weight: 800; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.stat-bar { display: grid; grid-template-columns: minmax(90px, 160px) 1fr auto; gap: 10px; align-items: center; padding: 5px 0; font-size: 12.5px; }
+.stat-name { display: flex; gap: 6px; align-items: center; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat-track { height: 8px; border-radius: 4px; background: var(--bg-sunken); overflow: hidden; }
+.stat-track i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+.stat-val { color: var(--text-3); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 12px; }
+.storage.clickable { cursor: pointer; }
+.storage.clickable:hover .storage-v { color: var(--accent); }
+.notice:not(.ok):not(.err) { background: var(--bg-sunken); }
+.settings-section .notice + .field, .settings-section .notice + .check-row, .settings-section > .hint + .field { margin-top: 12px; }
+
 /* legal pages, first-run privacy notice */
 .legal-modal .modal-card { width: min(780px, 100%); display: flex; flex-direction: column; max-height: calc(100vh - 48px); }
 .legal-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
