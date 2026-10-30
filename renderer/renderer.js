@@ -2578,6 +2578,44 @@
   // ---- events (bound once; regions only carry data-* attributes) ---------------------
   let suppressClick = false;
 
+  // Pull down at the top of the phone file list to refresh.
+  const PULL_TRIGGER = 70;
+  let pull = null;
+  const pullEl = document.createElement('div');
+  pullEl.className = 'ptr';
+  pullEl.innerHTML = icon('refresh', 20);
+  document.body.appendChild(pullEl);
+  function setPull(dy) {
+    pullEl.style.transform = `translate(-50%, ${Math.min(dy, PULL_TRIGGER * 1.4) - 48}px) rotate(${dy * 3}deg)`;
+    pullEl.style.opacity = String(Math.min(1, dy / PULL_TRIGGER));
+    pullEl.classList.toggle('armed', dy >= PULL_TRIGGER);
+  }
+  document.addEventListener('touchstart', (e) => {
+    const body = e.target.closest && e.target.closest('.m-body');
+    if (!body || body.scrollTop > 0 || e.touches.length !== 1 || pullEl.classList.contains('busy')) return;
+    pull = { body, y: e.touches[0].clientY, dy: 0 };
+  }, { passive: true });
+  document.addEventListener('touchmove', (e) => {
+    if (!pull) return;
+    pull.dy = Math.max(0, (e.touches[0].clientY - pull.y) * 0.5);
+    if (pull.body.scrollTop > 0) pull.dy = 0;
+    pullEl.style.transition = 'none';
+    setPull(pull.dy);
+  }, { passive: true });
+  document.addEventListener('touchend', () => {
+    if (!pull) return;
+    const go = pull.dy >= PULL_TRIGGER;
+    pull = null;
+    pullEl.style.transition = '';
+    if (!go) { setPull(0); return; }
+    pullEl.classList.add('busy');
+    pullEl.style.transform = `translate(-50%, ${PULL_TRIGGER - 48}px)`;
+    Promise.resolve(ACTIONS.refresh()).finally(() => {
+      pullEl.classList.remove('busy', 'armed');
+      setPull(0);
+    });
+  });
+
   document.addEventListener('click', (e) => {
     if (suppressClick) { suppressClick = false; e.preventDefault(); e.stopPropagation(); return; }
     const t = e.target;

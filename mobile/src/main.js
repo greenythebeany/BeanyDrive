@@ -244,6 +244,10 @@ async function runCameraBackup() {
     // Items queued but not yet uploaded are kept in `pending`, so closing the
     // app mid-backup doesn't skip them: they're queued again next time.
     c.pending = c.pending || {};
+    if (!c.readFix) {
+      queued += await requeueCutBackups(c);
+      c.readFix = 1;
+    }
     const { items } = await BeanyNative.listMedia({ since: c.since, limit: 200 });
     for (const m of items || []) {
       c.pending[m.key] = { uri: m.uri, name: m.name, size: m.size, added: m.added };
@@ -267,6 +271,41 @@ async function runCameraBackup() {
   emit('cameraBackup', await cameraSnapshot());
   return queued;
 }
+// 2.1.0 and 2.1.1 read every chunk of a backed-up file from its start, so
+// anything bigger than one chunk was stored with only its first part right.
+// Each such file still in the gallery is uploaded again and the cut copy
+// deleted. A copy that was fine (uploaded some other way) dedups against the
+// new upload as 'existing' and is kept.
+async function requeueCutBackups(c) {
+  const suspects = new Map(); // name|size → entries
+  for (const f of drive.metadata.files) {
+    if (f.trashed || f.chunks.length < 2 || !(f.path === c.folder || f.path.startsWith(`${c.folder}/`))) continue;
+    const k = `${f.name}|${f.size}`;
+    suspects.set(k, [...(suspects.get(k) || []), f]);
+  }
+  if (!suspects.size) return 0;
+  let queued = 0;
+  let since = 0;
+  const seen = new Set();
+  for (;;) {
+    const { items = [] } = await BeanyNative.listMedia({ since, limit: 200 });
+    let fresh = 0;
+    for (const m of items) {
+      if (seen.has(m.key)) continue;
+      seen.add(m.key);
+      fresh += 1;
+      since = Math.max(since, m.added);
+      for (const f of suspects.get(`${m.name}|${m.size}`) || []) {
+        const handle = registerNative({ uri: m.uri, name: m.name, size: m.size, mtimeMs: m.added });
+        enqueueUpload(handle, f.path, m.name).replaces = f.id;
+        queued += 1;
+      }
+    }
+    if (!fresh || items.length < 200) break;
+  }
+  return queued;
+}
+
 async function cameraUploaded(key) {
   const c = await readCamera();
   if (c.pending && c.pending[key]) {
@@ -345,6 +384,10 @@ async function runJob(job) {
     job.totalBytes = stat.size;
     const entry = await drive.upload(job.handle, job.destFolder, onProgress, control);
     if (job.cameraKey) await cameraUploaded(job.cameraKey).catch(() => {});
+    if (job.replaces && entry && entry.deduplicated !== 'existing' && entry.id !== job.replaces) {
+      await drive.deleteFile(job.replaces).catch(() => {});
+      pushUpdate();
+    }
     removeJob(job);
     emit('uploadDone', { uploadId: job.uploadId, name: job.name, ok: true, deduplicated: entry && entry.deduplicated });
   } catch (err) {
