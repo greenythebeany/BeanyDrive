@@ -291,6 +291,11 @@ kbd {
   color: #fff; flex-shrink: 0; background: var(--tile, var(--t-other));
 }
 .tile .ico { width: 18px; height: 18px; }
+/* a thumbnail in a tile's place: same box, the picture cropped to fill it */
+img.tile-img { object-fit: cover; background: var(--bg-sunken); border: 1px solid var(--border); padding: 0; }
+.tile.loading { animation: pulse 1.1s ease-in-out infinite; }
+.check-row.tight { margin-top: 0; }
+.card-art.has-thumb { background: var(--bg-sunken); background-image: none; }
 .tile.tile-lg { width: 44px; height: 44px; border-radius: 10px; }
 .tile.tile-lg .ico { width: 24px; height: 24px; }
 .tile.tile-xl { width: 72px; height: 72px; border-radius: 16px; }

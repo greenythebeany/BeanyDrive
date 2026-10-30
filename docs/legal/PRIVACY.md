@@ -1,6 +1,6 @@
 # Privacy Policy
 
-_Last updated: 2026-10-25_
+_Last updated: 2026-10-30_
 
 BeanyDrive is a client app that stores your files in a **Discord channel you own, through a Discord bot you create**. The developer runs no server for BeanyDrive, does not receive analytics or telemetry from your copy of the app, and cannot see your files, your bot token or your channel.
 
@@ -32,7 +32,9 @@ This document is also available inside the app, under **Settings → About → L
 - **Interface preferences** are stored the same way as on desktop.
 - **Downloads** go wherever you choose to save or share them.
 
-**Previews and thumbnails** are held in memory while the app is open and never written to disk.
+**Thumbnails** of your images and PDFs are kept on your device, in the app's own storage (the app-data folder above on desktop, the app's data on Android), so they don't have to be downloaded from Discord again. They're small, downscaled pictures, and only for files up to 25 MB. Remove them with **Settings → Appearance → Clear thumbnail cache**, or stop them being made by turning off **Load thumbnails as you scroll**. Past 3,000 thumbnails, the oldest are deleted.
+
+**Full previews** are held in memory while the app is open and never written to disk.
 
 ## Data sent to other services (never to the developer)
 
