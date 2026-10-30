@@ -142,6 +142,33 @@ Intent**. So there's one less toggle to flip when creating your bot.
 </tr>
 </table>
 
+### Thumbnails as you scroll
+
+<p align="center">
+  <img src="docs/screenshots/thumbnails-grid.png" alt="Grid view with image and PDF thumbnails loaded for what's on screen" width="900">
+</p>
+
+### Encryption and drive health
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/security.png" alt="Security settings, drive unlocked"></td>
+<td width="50%"><img src="docs/screenshots/security-setup.png" alt="Turning on encryption"></td>
+</tr>
+<tr>
+<td align="center">Encrypted drive, unlocked on this device</td>
+<td align="center">Turning encryption on</td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/drive-health.png" alt="Check drive report and index backups"></td>
+<td width="50%"><img src="docs/screenshots/storage.png" alt="Storage overview"></td>
+</tr>
+<tr>
+<td align="center">Check drive and index backups</td>
+<td align="center">Storage overview</td>
+</tr>
+</table>
+
 ### In-app preview
 
 Images, PDFs (rendered page by page via pdf.js), video, audio, text/code and
@@ -174,6 +201,18 @@ Word/PowerPoint open full-window without a Save As dialog:
 <td align="center">Nothing</td>
 <td align="center">File sheet</td>
 <td align="center">Long-press select</td>
+</tr>
+<tr>
+<td width="25%"><img src="docs/screenshots/mobile-camera.png" alt="Android security and camera backup settings"></td>
+<td width="25%"><img src="docs/screenshots/mobile-storage.png" alt="Android storage overview"></td>
+<td width="25%"><img src="docs/screenshots/mobile-health.png" alt="Android drive health"></td>
+<td width="25%"></td>
+</tr>
+<tr>
+<td align="center">Encryption and camera backup</td>
+<td align="center">Storage</td>
+<td align="center">Drive health</td>
+<td></td>
 </tr>
 </table>
 
