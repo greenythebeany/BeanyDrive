@@ -23,6 +23,10 @@ on:
   workflow_dispatch:
   push:
     branches: ['release/**']
+  # A debug build on pull requests that touch the Android side, so the native
+  # plugin is known to compile before anything is released.
+  pull_request:
+    paths: ['mobile/**', 'renderer/**', 'core/**', 'platform/**']
 
 permissions:
   contents: write
@@ -54,6 +58,9 @@ jobs:
       - name: Create the Android project
         run: npx cap add android
 
+      - name: Add the native plugin
+        run: node native/install.mjs
+
       - name: Icons and splash
         run: |
           cp assets/icon.png assets/icon-only.png
@@ -61,7 +68,15 @@ jobs:
             --iconBackgroundColor '#000000' --iconBackgroundColorDark '#000000' \
             --splashBackgroundColor '#000000' --splashBackgroundColorDark '#000000'
 
+      - name: Debug build (pull requests)
+        if: github.event_name == 'pull_request'
+        working-directory: mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
       - name: Restore signing key
+        if: github.event_name != 'pull_request'
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -81,6 +96,7 @@ jobs:
           } > android/app/keystore/keystore.properties
 
       - name: Version and signing config
+        if: github.event_name != 'pull_request'
         run: |
           VERSION=$(node -p "require('./package.json').version")
           CODE=$(node -p "const [a,b,c]=require('./package.json').version.split('.').map(Number); a*10000+b*100+c")
@@ -111,12 +127,14 @@ jobs:
           EOF
 
       - name: Build release APK
+        if: github.event_name != 'pull_request'
         working-directory: mobile/android
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease
 
       - name: Name APK by version
+        if: github.event_name != 'pull_request'
         id: apk
         run: |
           VERSION=$(node -p "require('./package.json').version")
@@ -125,6 +143,7 @@ jobs:
           echo "file=BeanyDrive-$VERSION-android.apk" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifact
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: BeanyDrive-${{ steps.apk.outputs.version }}-apk
@@ -132,6 +151,9 @@ jobs:
           retention-days: 14
 
       - name: Attach to GitHub release (if one exists)
+        # Only release branches attach; a manual run of another branch must not
+        # replace a published release's APK.
+        if: startsWith(github.ref, 'refs/heads/release/')
         working-directory: .
         env:
           GH_TOKEN: ${{ github.token }}

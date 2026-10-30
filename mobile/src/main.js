@@ -15,7 +15,8 @@
 const { createApi } = require('../../core/discord-api');
 const { DiscordDrive } = require('../../core/drive');
 const { nativeFetch } = require('../../platform/capacitor-http');
-const { capacitorFiles, registerFile, forgetFile } = require('../../platform/capacitor-files');
+const { capacitorFiles, registerFile, registerNative, forgetFile, BeanyNative } = require('../../platform/capacitor-files');
+const { bytesToBase64 } = require('../../platform/capacitor-http');
 const { createRateTracker } = require('../../upload-stats');
 const { isCancelError, isPauseError } = require('../../core/drive');
 const { createResumeStore } = require('../../platform/capacitor-resume-store');
@@ -30,6 +31,11 @@ const { App } = require('@capacitor/app');
 const SETTINGS_KEY = 'beanydrive_settings';
 const TOKEN_KEY = 'beanydrive_token';
 const PREVIEW_MAX_BYTES = 100 * 1024 * 1024; // lower than desktop: phone memory
+const ENCRYPT_UPLOADS_KEY = 'beanydrive_encrypt_uploads';
+const CAMERA_KEY = 'beanydrive_camera_backup';
+// The drive's encryption key for this device, per channel. Preferences, like
+// the token (see readSettings).
+const driveKeyName = () => `beanydrive_drivekey_${drive.channelId || ''}`;
 
 const api = createApi({ fetchImpl: nativeFetch });
 const drive = new DiscordDrive({ api, files: capacitorFiles });
@@ -48,7 +54,20 @@ function emit(channel, payload) {
 
 drive.on('status', (message) => emit('status', { status: drive.status, message }));
 drive.on('error', (err) => emit('status', { status: drive.status, message: `Error: ${err.message}` }));
-drive.on('ready', () => emit('update', drive.snapshot()));
+drive.on('ready', async () => {
+  // Unlock with this device's stored key before the first snapshot.
+  const { value: encUploads } = await Preferences.get({ key: ENCRYPT_UPLOADS_KEY });
+  drive.encryptUploads = encUploads !== '0';
+  const { value: stored } = await Preferences.get({ key: driveKeyName() });
+  if (stored) {
+    const ok = await drive.unlockWithStoredKey(stored).catch(() => false);
+    if (!ok) await Preferences.remove({ key: driveKeyName() });
+  } else {
+    drive.lock();
+  }
+  emit('update', drive.snapshot());
+  runCameraBackup().catch(() => {});
+});
 
 function pushUpdate() { emit('update', drive.snapshot()); }
 
@@ -121,9 +140,9 @@ const ready = (async () => {
 })();
 
 // --- downloads ------------------------------------------------------------
-// No save dialog on Android: the file lands in the app's Documents directory
-// and is then offered to the share sheet, which is how you get it into
-// Downloads, Drive, or anywhere else.
+// Saved straight to the phone through MediaStore (mobile/native): photos and
+// videos into Pictures/ and Movies/BeanyDrive, where the gallery finds them,
+// everything else into Download/BeanyDrive. No permission needed on Android 10+.
 let taskSeq = 0;
 async function downloadToDevice(fileId, name) {
   await ready;
@@ -134,26 +153,132 @@ async function downloadToDevice(fileId, name) {
   const label = `Downloading ${name}`;
   emit('taskProgress', { taskId, label, progress: 0, detail: 'starting…' });
   try {
-    // Cache is always writable with no runtime permission, unlike Documents on
-    // scoped storage. The share sheet is then how the file reaches Downloads,
-    // Drive, or wherever the user actually wants it.
-    const target = { path: name, directory: Directory.Cache };
+    const mime = guessMimeFor(name);
+    const target = { device: true, name, mime };
     await drive.download(fileId, target, (cur, total) => {
       emit('taskProgress', {
         taskId, label, progress: Math.round((cur / total) * 100), detail: `${cur}/${total} chunks`,
       });
     });
-    const { uri } = await Filesystem.getUri(target);
-    emit('taskDone', { taskId, ok: true, message: `${name} ready — choose where to keep it` });
-    try {
-      await Share.share({ title: name, url: uri, dialogTitle: `Save or send ${name}` });
-    } catch (e) { /* sheet dismissed; the file is still in the app's cache */ }
-    return { ok: true, path: uri };
+    const result = target.result || {};
+    // The renderer's own toast says where it went, with an Open button.
+    emit('taskDone', { taskId, ok: true, message: '' });
+    return { ok: true, path: result.location, uri: result.uri, file: result.file, mime, openable: true };
   } catch (err) {
     emit('taskDone', { taskId, ok: false, message: `Download failed: ${err.message}` });
     return { ok: false, error: err.message };
   }
 }
+
+// Sharing goes through the cache and the share sheet, as downloads used to.
+async function shareFile(fileId) {
+  await ready;
+  const entry = drive.getEntry(fileId);
+  if (!entry) return { ok: false, error: 'File not found' };
+  const target = { path: entry.name, directory: Directory.Cache };
+  await drive.download(fileId, target);
+  const { uri } = await Filesystem.getUri(target);
+  await Share.share({ title: entry.name, url: uri, dialogTitle: `Send ${entry.name}` }).catch(() => {});
+  return { ok: true };
+}
+
+// --- streaming --------------------------------------------------------------
+// <video src="/_beanystream/<id>"> is answered by the native plugin, which asks
+// for each byte range here; the bytes come from the drive core (decrypted if
+// need be) and go back piece by piece.
+BeanyNative.addListener('streamRequest', async ({ req, fileId, start, end }) => {
+  try {
+    await ready;
+    for await (const piece of drive.readRange(fileId, start, end)) {
+      for (let at = 0; at < piece.length; at += 512 * 1024) {
+        const { open } = await BeanyNative.streamData({ req, data: bytesToBase64(piece.subarray(at, at + 512 * 1024)) });
+        if (!open) return;
+      }
+    }
+  } catch (e) {
+    /* the player sees a short response and reports the error itself */
+  } finally {
+    BeanyNative.streamEnd({ req }).catch(() => {});
+  }
+});
+
+// --- shared to BeanyDrive --------------------------------------------------
+async function takeShared() {
+  const { files } = await BeanyNative.getSharedFiles();
+  if (!files || !files.length) return;
+  const items = files.map((f) => ({
+    name: f.name, size: f.size,
+    handle: registerNative({ uri: f.uri, name: f.name, size: f.size, mtimeMs: 0 }),
+  }));
+  emit('sharedFiles', items);
+}
+BeanyNative.addListener('shared', () => takeShared().catch(() => {}));
+
+// --- camera backup -----------------------------------------------------------
+// While the app is open (on start, on returning to it, and every few minutes),
+// new photos and videos in DCIM are queued as ordinary uploads into
+// <folder>/<yyyy-mm>. The upload's dedup check skips anything already there.
+const CAMERA_INTERVAL_MS = 5 * 60 * 1000;
+const cameraQueued = new Set(); // media keys queued this session
+async function readCamera() {
+  const { value } = await Preferences.get({ key: CAMERA_KEY });
+  return { enabled: false, folder: 'Camera', since: 0, lastRun: 0, ...(value ? JSON.parse(value) : {}) };
+}
+async function writeCamera(c) {
+  await Preferences.set({ key: CAMERA_KEY, value: JSON.stringify(c) });
+}
+async function cameraSnapshot(extra = {}) {
+  const c = await readCamera();
+  const { granted } = await BeanyNative.mediaPermission().catch(() => ({ granted: false }));
+  return { enabled: c.enabled, folder: c.folder, lastRun: c.lastRun, granted, ...extra };
+}
+let cameraRunning = false;
+async function runCameraBackup() {
+  const c = await readCamera();
+  if (!c.enabled || cameraRunning || drive.status !== 'connected') return 0;
+  const { granted } = await BeanyNative.mediaPermission();
+  if (!granted) return 0;
+  cameraRunning = true;
+  let queued = 0;
+  try {
+    // Items queued but not yet uploaded are kept in `pending`, so closing the
+    // app mid-backup doesn't skip them: they're queued again next time.
+    c.pending = c.pending || {};
+    const { items } = await BeanyNative.listMedia({ since: c.since, limit: 200 });
+    for (const m of items || []) {
+      c.pending[m.key] = { uri: m.uri, name: m.name, size: m.size, added: m.added };
+      c.since = Math.max(c.since, m.added);
+    }
+    for (const [key, m] of Object.entries(c.pending)) {
+      if (cameraQueued.has(key)) continue;
+      cameraQueued.add(key);
+      const d = new Date(m.added);
+      const dest = `${c.folder}/${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const handle = registerNative({ uri: m.uri, name: m.name, size: m.size, mtimeMs: m.added });
+      enqueueUpload(handle, dest, m.name).cameraKey = key;
+      queued += 1;
+    }
+    c.lastRun = Date.now();
+    await writeCamera(c);
+    if (queued) { pushUploads(); pumpUploads(); }
+  } finally {
+    cameraRunning = false;
+  }
+  emit('cameraBackup', await cameraSnapshot());
+  return queued;
+}
+async function cameraUploaded(key) {
+  const c = await readCamera();
+  if (c.pending && c.pending[key]) {
+    delete c.pending[key];
+    await writeCamera(c);
+  }
+}
+setInterval(() => { runCameraBackup().catch(() => {}); }, CAMERA_INTERVAL_MS);
+App.addListener('resume', () => {
+  runCameraBackup().catch(() => {});
+  takeShared().catch(() => {});
+});
 
 // --- uploads --------------------------------------------------------------
 // Same job model as the desktop: a queue whose entries outlive their transfer
@@ -218,13 +343,15 @@ async function runJob(job) {
   try {
     const stat = await capacitorFiles.stat(job.handle);
     job.totalBytes = stat.size;
-    await drive.upload(job.handle, job.destFolder, onProgress, control);
+    const entry = await drive.upload(job.handle, job.destFolder, onProgress, control);
+    if (job.cameraKey) await cameraUploaded(job.cameraKey).catch(() => {});
     removeJob(job);
-    emit('uploadDone', { uploadId: job.uploadId, name: job.name, ok: true });
+    emit('uploadDone', { uploadId: job.uploadId, name: job.name, ok: true, deduplicated: entry && entry.deduplicated });
   } catch (err) {
     if (isPauseError(err)) {
       job.state = 'paused';
     } else if (isCancelError(err)) {
+      if (job.cameraKey) cameraUploaded(job.cameraKey).catch(() => {}); // canceled = skip it
       removeJob(job);
       emit('uploadDone', { uploadId: job.uploadId, name: job.name, ok: false, canceled: true });
     } else {
@@ -251,11 +378,47 @@ function pumpUploads() {
   }
 }
 
+function enqueueUpload(handle, destFolder, name) {
+  const job = {
+    uploadId: `u${Date.now()}_${uploadSeq++}`,
+    handle, destFolder, name,
+    state: 'queued', progress: 0, error: null, totalBytes: 0,
+    rate: createRateTracker(), controller: null, paused: false, canceled: false,
+  };
+  uploadJobs.push(job);
+  return job;
+}
+
 const findJob = (uploadId) => uploadJobs.find((j) => j.uploadId === uploadId) || null;
 
 // Desktop-only capabilities. Answering plainly beats a silent no-op — the UI
 // surfaces these strings as toasts.
 const NOT_YET = (what) => async () => ({ ok: false, error: `${what} isn't available on Android yet` });
+
+async function security(fn) {
+  await ready;
+  try {
+    if (drive.status !== 'connected') throw new Error('Not connected. Check Settings.');
+    await fn();
+    pushUpdate();
+    return { ok: true, encryption: drive.encryptionState() };
+  } catch (err) {
+    return { ok: false, error: err.message, encryption: drive.encryptionState() };
+  }
+}
+
+function repair(fn) {
+  return async (arg) => {
+    await ready;
+    try {
+      const count = await fn(arg);
+      pushUpdate();
+      return { ok: true, count };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  };
+}
 
 function guarded(fn) {
   return async (...args) => {
@@ -351,12 +514,7 @@ window.api = {
     for (const handle of paths) {
       let name = handle;
       try { name = (await capacitorFiles.stat(handle)).name; } catch (e) { /* keep the handle */ }
-      uploadJobs.push({
-        uploadId: `u${Date.now()}_${uploadSeq++}`,
-        handle, destFolder, name,
-        state: 'queued', progress: 0, error: null, totalBytes: 0,
-        rate: createRateTracker(), controller: null, paused: false, canceled: false,
-      });
+      enqueueUpload(handle, destFolder, name);
     }
     pushUploads();
     pumpUploads();
@@ -389,6 +547,7 @@ window.api = {
     if (job.state === 'running') { job.canceled = true; job.controller.abort(); return { ok: true }; }
     // Paused/failed rows still own chunks in the channel.
     await drive.discardResumable(job.handle, job.destFolder).catch(() => {});
+    if (job.cameraKey) cameraUploaded(job.cameraKey).catch(() => {});
     removeJob(job);
     emit('uploadDone', { uploadId, name: job.name, ok: false, canceled: true });
     pushUploads();
@@ -398,6 +557,75 @@ window.api = {
   startDrag() {},
 
   download: (fileId, name) => downloadToDevice(fileId, name),
+  openDownloaded: async ({ uri, file, mime }) => {
+    try {
+      await BeanyNative.openFile({ uri, file, mime });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  },
+  shareFile: (fileId) => shareFile(fileId),
+
+  // Video and audio stream through the native plugin (see streamRequest).
+  streamUrl: (fileId) => {
+    const e = drive.getEntry(fileId);
+    const type = guessMimeFor(e ? e.name : '').replace('video/quicktime', 'video/mp4');
+    return `${location.origin}/_beanystream/${encodeURIComponent(fileId)}?size=${e ? e.size : 0}&type=${encodeURIComponent(type)}`;
+  },
+
+  onSharedFiles: (cb) => { on('sharedFiles', cb); ready.then(() => takeShared()).catch(() => {}); },
+  discardShared: (handles) => handles.forEach((h) => forgetFile(h)),
+
+  getCameraBackup: () => cameraSnapshot(),
+  onCameraBackup: (cb) => on('cameraBackup', cb),
+  setCameraBackup: async ({ enabled, folder, includeExisting, requestPermission } = {}) => {
+    const c = await readCamera();
+    if (folder !== undefined) c.folder = String(folder).replace(/^\/+|\/+$/g, '') || 'Camera';
+    if (enabled === true && !c.enabled) { c.enabled = true; c.since = includeExisting ? 0 : Date.now(); }
+    if (enabled === false) c.enabled = false;
+    await writeCamera(c);
+    if (c.enabled && (enabled === true || requestPermission)) await BeanyNative.requestMediaPermission().catch(() => {});
+    if (c.enabled) runCameraBackup().catch(() => {});
+    return cameraSnapshot();
+  },
+  runCameraBackup: async () => cameraSnapshot({ queued: await runCameraBackup() }),
+
+  // Encryption: same contract as preload.js.
+  setupEncryption: (passphrase) => security(async () => {
+    await Preferences.set({ key: driveKeyName(), value: await drive.setupEncryption(passphrase) });
+  }),
+  unlockDrive: (passphrase) => security(async () => {
+    await Preferences.set({ key: driveKeyName(), value: await drive.unlock(passphrase) });
+  }),
+  lockDrive: () => security(async () => {
+    drive.lock();
+    await Preferences.remove({ key: driveKeyName() });
+  }),
+  changePassphrase: (passphrase) => security(() => drive.changePassphrase(passphrase)),
+  setEncryptUploads: (value) => security(async () => {
+    drive.encryptUploads = !!value;
+    await Preferences.set({ key: ENCRYPT_UPLOADS_KEY, value: value ? '1' : '0' });
+  }),
+
+  checkDrive: async () => {
+    await ready;
+    const taskId = `t${Date.now()}_${taskSeq++}`;
+    const label = 'Checking drive';
+    emit('taskProgress', { taskId, label, progress: 0, detail: 'reading the channel…' });
+    try {
+      const report = await drive.checkDrive((seen) => emit('taskProgress', { taskId, label, progress: 50, detail: `${seen} messages read` }));
+      emit('taskDone', { taskId, ok: true, message: 'Drive check finished' });
+      return { ok: true, report };
+    } catch (err) {
+      emit('taskDone', { taskId, ok: false, message: `Check failed: ${err.message}` });
+      return { ok: false, error: err.message };
+    }
+  },
+  recoverOrphans: repair((fileIds) => drive.recoverOrphans(fileIds)),
+  deleteOrphans: repair((fileIds) => drive.deleteOrphans(fileIds)),
+  removeBroken: repair((fileIds) => drive.removeBroken(fileIds)),
+  restoreBackup: repair((messageId) => drive.restoreBackup(messageId)),
   copyLink: async (fileId) => {
     await ready;
     const { url, multiChunk } = await drive.getShareLink(fileId);

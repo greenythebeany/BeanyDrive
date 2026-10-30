@@ -38,6 +38,28 @@ pins, fetch/delete a message) has a REST endpoint, and REST message fetches
 always return full content regardless of the privileged **Message Content
 Intent**. So there's one less toggle to flip when creating your bot.
 
+## What's new in 2.1
+
+- **End-to-end encryption** (optional, Settings → Security): file contents
+  are encrypted on your device with AES-256-GCM before upload. Only chunks of
+  scrambled bytes reach Discord, and the passphrase never leaves your devices.
+- **Index backups and Check drive** (Settings → Drive health): earlier copies
+  of the file index are kept in the channel and can be restored; Check drive
+  finds files with missing chunks and recovers files the index lost, or
+  rebuilds a drive whose index is gone.
+- **Duplicate detection**: uploading a file that's already in the drive links
+  the existing chunks instead of sending it again.
+- **Video streaming**: videos play as they download and seek without fetching
+  the whole file, on desktop and Android. Videos get thumbnails too.
+- **Storage overview**: sizes by type and folder, the largest files, what's in
+  Trash, and what encryption and dedup cover. Click *Stored on Discord* in the
+  sidebar.
+- **Android**: downloads save straight to the phone (photos and videos to the
+  gallery, everything else to Download/BeanyDrive), **Share → BeanyDrive**
+  from any app, and optional **camera backup** of new photos and videos.
+- **Tests**: the drive core has unit tests (`npm test`) against an in-memory
+  Discord, run in CI on every pull request.
+
 ## What's new in 2.0
 
 - **A complete redesign** with two interface styles to pick from in
@@ -120,6 +142,33 @@ Intent**. So there's one less toggle to flip when creating your bot.
 </tr>
 </table>
 
+### Thumbnails as you scroll
+
+<p align="center">
+  <img src="docs/screenshots/thumbnails-grid.png" alt="Grid view with image and PDF thumbnails loaded for what's on screen" width="900">
+</p>
+
+### Encryption and drive health
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/security.png" alt="Security settings, drive unlocked"></td>
+<td width="50%"><img src="docs/screenshots/security-setup.png" alt="Turning on encryption"></td>
+</tr>
+<tr>
+<td align="center">Encrypted drive, unlocked on this device</td>
+<td align="center">Turning encryption on</td>
+</tr>
+<tr>
+<td width="50%"><img src="docs/screenshots/drive-health.png" alt="Check drive report and index backups"></td>
+<td width="50%"><img src="docs/screenshots/storage.png" alt="Storage overview"></td>
+</tr>
+<tr>
+<td align="center">Check drive and index backups</td>
+<td align="center">Storage overview</td>
+</tr>
+</table>
+
 ### In-app preview
 
 Images, PDFs (rendered page by page via pdf.js), video, audio, text/code and
@@ -152,6 +201,18 @@ Word/PowerPoint open full-window without a Save As dialog:
 <td align="center">Nothing</td>
 <td align="center">File sheet</td>
 <td align="center">Long-press select</td>
+</tr>
+<tr>
+<td width="25%"><img src="docs/screenshots/mobile-camera.png" alt="Android security and camera backup settings"></td>
+<td width="25%"><img src="docs/screenshots/mobile-storage.png" alt="Android storage overview"></td>
+<td width="25%"><img src="docs/screenshots/mobile-health.png" alt="Android drive health"></td>
+<td width="25%"></td>
+</tr>
+<tr>
+<td align="center">Encryption and camera backup</td>
+<td align="center">Storage</td>
+<td align="center">Drive health</td>
+<td></td>
 </tr>
 </table>
 
@@ -192,7 +253,15 @@ Word/PowerPoint open full-window without a Save As dialog:
   copy and the drag works from then on
 - **In-app preview** — images, PDFs, video, audio, text/code, Word and
   PowerPoint (`p`, double-click, or the Preview button). The thumbnail in the
-  details panel and the full preview share one download
+  details panel and the full preview share one download. Video and audio
+  stream: playback starts with the first chunk, and seeking fetches only the
+  chunks it lands in
+- **End-to-end encryption** — optional, per drive. See
+  [Encryption](#encryption)
+- **Index backups and Check drive** — see [Drive health](#drive-health)
+- **Duplicate detection** — every upload is hashed first; content already in
+  the drive is linked instead of re-sent, and chunks shared by duplicates are
+  only deleted once nothing uses them
 - **In-app updates** — a background check on launch; the update downloads
   with progress, is verified against the release's `latest.yml` checksum,
   and installs on **Restart & install**. The portable build downloads the new
@@ -306,10 +375,18 @@ npm install
 .\build-apk.bat
 ```
 
-It browses, uploads, previews and downloads. The app checks GitHub for a
-newer release on launch and offers the `.apk` from it; Android's own
-installer does the rest. See [mobile/README.md](mobile/README.md) for the
-detail.
+It browses, uploads, previews, streams and downloads. Downloads go straight
+to the phone: photos to Pictures/BeanyDrive and videos to Movies/BeanyDrive
+(where the gallery shows them), everything else to Download/BeanyDrive.
+Other apps can **Share → BeanyDrive** to upload, and **camera backup**
+(Settings) uploads new photos and videos from the camera folder while the app
+is open. The app checks GitHub for a newer release on launch and offers the
+`.apk` from it; Android's own installer does the rest. See
+[mobile/README.md](mobile/README.md) for the detail.
+
+`mobile/android` is generated, not committed: CI runs `npx cap add android`
+and then `node native/install.mjs`, which adds BeanyDrive's own plugin
+(`mobile/native/BeanyNativePlugin.java`) and its manifest entries.
 
 ## Keyboard shortcuts
 
@@ -396,6 +473,45 @@ limit usually caps you anyway; set it to **1** on an unstable connection.
 Your uplink matters too: ~10 MB/s is about **80 Mbps** upstream, more than
 most home connections have.
 
+## Encryption
+
+Settings → Security → **Turn on encryption** asks for a passphrase. From then
+on, uploads from that device are encrypted:
+
+- A random 256-bit data key encrypts each chunk with **AES-256-GCM**, bound to
+  the file and its position so chunks can't be swapped or reordered.
+- The data key is stored in the index only **wrapped** by a key derived from
+  your passphrase (PBKDF2-SHA-256, 310,000 rounds). Changing the passphrase
+  rewraps that one value; nothing is re-uploaded.
+- Each device asks for the passphrase once and keeps the data key in its own
+  protected storage (with the bot token). **Lock on this device** forgets it.
+- Encrypted chunks carry no file name, in the message or the attachment.
+  **The index still lists names, folders and sizes in the clear**, so the
+  file list is readable by anyone who can read the channel; the contents
+  aren't.
+- **A forgotten passphrase can't be recovered.** Encrypted files are lost
+  without it.
+- Files uploaded before encryption was turned on stay unencrypted.
+
+## Drive health
+
+- **Index backups**: every metadata save replaces the pinned index message.
+  At most once every 30 minutes, the outgoing copy is kept (unpinned and
+  relabelled) instead of deleted, and the newest 10 are kept. Settings →
+  Drive health → *Index backups* lists them, and **Restore** puts one back,
+  after backing up the current index first, so a restore can be undone.
+- **Check drive** reads every message in the channel (about a second per 100)
+  and compares it with the index:
+  - **Missing chunks**: files that can't be downloaded any more because part
+    of them was deleted from the channel. They can be removed.
+  - **Not in the index**: complete files in the channel that the index doesn't
+    list, after a restore or a lost index. **Recover** adds them to a
+    *Recovered* folder. This is also how a drive whose index is gone entirely
+    is rebuilt; names come from the chunk messages (an encrypted file's name
+    isn't in them, so it's recovered as *Recovered file …*).
+  - **Leftover chunks**: pieces of uploads that never finished. They can be
+    deleted.
+
 ## Legal
 
 BeanyDrive is free, open-source software under the [MIT License](LICENSE).
@@ -461,9 +577,22 @@ inject markup, scripts, or outbound requests into the app.
 - **Trash vs. permanent delete**: moving a file to Trash only flips a flag
   in the index; its chunks stay until you **Empty Trash**, which is one
   DELETE per chunk and reports progress in the transfers card.
-- **Thumbnails**: the details panel loads a thumbnail for images and PDFs up
-  to 25 MB. Bigger files show their icon and preview on click, so selecting
-  something never quietly pulls hundreds of MB off Discord.
+- **Thumbnails**: images and PDFs up to 25 MB, and videos of any size, get a
+  thumbnail in the list, the grid and the details panel, loaded for whatever
+  is on screen as you scroll (two at a time; rows scrolled past before their
+  turn are skipped). A video's thumbnail streams only the start of the file
+  (and the end, if that's where its index is). Each is downscaled and kept on
+  your device, so a file is downloaded for its thumbnail once, not every
+  launch. Turn background thumbnails off, or clear them, in Settings →
+  Appearance.
+- **Duplicates**: before uploading, a file is hashed in 8 MB blocks. If the
+  drive already holds the same content, the new entry links the existing
+  chunks; if it's the same name in the same folder, nothing is added at all.
+  Emptying Trash, deleting a file or a folder only deletes chunks no other
+  entry still uses.
+- **Tests**: `npm test` runs the core's unit tests (`test/`) against an
+  in-memory Discord: chunking, resume, the 413 fallback, dedup, encryption,
+  range reads, index backups and Check drive.
 - **Drag out**: an OS drag has to hand over a file that already exists on
   disk, so dragging a file that isn't cached yet starts the download, and you
   drag again once it's ready. Copies live in `drag-cache` beside the config,

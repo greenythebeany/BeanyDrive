@@ -76,6 +76,10 @@
     winMax: '<rect x="5" y="5" width="10" height="10" rx="1"/>',
     winClose: '<path d="M5.5 5.5l9 9M14.5 5.5l-9 9"/>',
     dot: '<circle cx="10" cy="10" r="3.5" fill="currentColor" stroke="none"/>',
+    lock: '<rect x="4" y="9" width="12" height="8.5" rx="2"/><path d="M6.5 9V6.5a3.5 3.5 0 0 1 7 0V9"/>',
+    shield: '<path d="M10 2.5 4 5v4.5c0 4 2.6 6.9 6 8 3.4-1.1 6-4 6-8V5z"/><path d="m7.5 10 1.8 1.8 3.4-3.6"/>',
+    camera: '<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h2l1.2-2h4.6l1.2 2h2A1.5 1.5 0 0 1 17 7.5v7A1.5 1.5 0 0 1 15.5 16h-11A1.5 1.5 0 0 1 3 14.5z"/><circle cx="10" cy="10.5" r="3"/>',
+    pie: '<path d="M10 2.5a7.5 7.5 0 1 0 7.5 7.5H10z"/><path d="M12.5 2.9a7.5 7.5 0 0 1 4.6 4.6h-4.6z"/>',
   };
   const iconCache = new Map();
   function icon(name, size = 20) {
@@ -150,7 +154,7 @@
   // 'ppt' also cover legacy/OpenDocument extensions that ooxml.js can't read;
   // those open the preview and explain why rather than being unclickable.
   const PREVIEWABLE = new Set(['image', 'pdf', 'text', 'code', 'video', 'audio', 'word', 'ppt']);
-  const THUMBABLE = new Set(['image', 'pdf']);
+  const THUMBABLE = new Set(['image', 'pdf', 'video']);
 
   // User-created tags, layered on top of the built-in TAGS map and persisted
   // locally — there's no server-side tag registry, just per-file tag ids, so
@@ -284,20 +288,30 @@
     dragReady: new Set(),     // file ids with a local copy, draggable right now
     dragPreparing: new Set(), // file ids currently being fetched for a drag
     previewOverlay: null,
-    detailThumb: null,
+    autoThumbs: ls.get('beanydrive_thumbs', '1') !== '0', // thumbnails for rows scrolled into view
+
+    encryption: null,  // { configured, unlocked, encryptUploads, encryptedFiles } from main
+    backups: [],       // earlier copies of the index, newest first
+    secPassInput: '',
+    secPass2Input: '',
+    secBusy: false,
+    health: null,      // { checking, report, error, busy } — Check drive and index backups
+    storageOpen: false,
+    camera: null,      // Android: { enabled, folder, granted, lastRun, queued }
   };
 
   let pdfjsLibPromise = null; // lazy-loaded, cached — only fetched the first time a PDF is previewed
   let pdfPreviewToken = 0; // bumped on every openPreview()/close so a stale async render can't stomp a newer one
-  let detailThumbToken = 0; // bumped whenever the selection changes so a stale thumb fetch can't stomp a newer one
   let toastSeq = 0;
   let dragCounter = 0;
 
-  // Thumbnails cost a full download from Discord, so the ones already fetched
-  // for the detail pane are kept (LRU) and reused by the grid view.
-  const THUMB_CACHE_MAX = 60;
-  const thumbCache = new Map(); // file id → blob URL
+  // Thumbnails in memory, as blob URLs of small downscaled images (LRU).
+  // Evicted ones are still in the on-disk store, so they come back without
+  // another download. Keyed by String(file id) throughout.
+  const THUMB_CACHE_MAX = 400;
+  const thumbCache = new Map(); // String(file id) → blob URL
   function cacheThumb(id, url) {
+    id = String(id);
     thumbCache.delete(id);
     thumbCache.set(id, url);
     while (thumbCache.size > THUMB_CACHE_MAX) {
@@ -387,6 +401,8 @@
     state.connection.chunkLimitMb = snap.chunkLimitMb;
     state.files = snap.files || [];
     state.folders = snap.folders || [];
+    state.encryption = snap.encryption || null;
+    state.backups = snap.backups || [];
   }
 
   api.onUpdate((snap) => { applyStatusSnapshot(snap); render(); });
@@ -412,14 +428,34 @@
   });
   api.onTaskDone(({ taskId, ok, message }) => {
     state.tasks = state.tasks.filter((t) => t.taskId !== taskId);
-    showToast(message, { kind: ok ? 'ok' : 'err' });
+    if (message) showToast(message, { kind: ok ? 'ok' : 'err' });
   });
   // Terminal outcomes only — a paused or failed upload keeps its row instead.
-  api.onUploadDone(({ name, ok, error, canceled }) => {
-    if (ok) showToast(`Uploaded ${name}`, { kind: 'ok' });
+  api.onUploadDone(({ name, ok, error, canceled, deduplicated }) => {
+    if (ok && deduplicated === 'existing') showToast(`${name} is already in this folder`, { kind: 'ok' });
+    else if (ok && deduplicated === 'linked') showToast(`${name} was already uploaded — linked it, nothing re-sent`, { kind: 'ok' });
+    else if (ok) showToast(`Uploaded ${name}`, { kind: 'ok' });
     else if (canceled) showToast(`Canceled ${name}`);
     else showToast(`Failed: ${name}${error ? ' — ' + error : ''}`, { kind: 'err' });
   });
+  // Android: files shared to BeanyDrive from another app. They upload to the
+  // folder that's open, after asking.
+  if (api.onSharedFiles) {
+    api.onSharedFiles((items) => {
+      if (!items || !items.length) return;
+      const dest = currentFolder();
+      openConfirm({
+        title: items.length === 1 ? `Upload “${items[0].name}”?` : `Upload ${items.length} shared files?`,
+        message: `To ${dest || 'My Drive'}. Open another folder first to put them somewhere else.`,
+        confirmLabel: 'Upload',
+        onConfirm: () => apiCall(api.upload(items.map((i) => i.handle), currentFolder()), (res) => {
+          if (res && !res.ok) showToast(res.error || 'Upload failed', { kind: 'err' });
+          else { state.transfersOpen = true; render(); }
+        }),
+        onCancel: () => api.discardShared && api.discardShared(items.map((i) => i.handle)),
+      });
+    });
+  }
   api.onPreviewProgress(({ fileId, progress }) => {
     if (state.previewOverlay && state.previewOverlay.fileId === fileId) {
       state.previewOverlay.progress = progress;
@@ -739,6 +775,7 @@
     patch(R.head, buildHead(view));
     patch(R.selbar, buildSelectionBar());
     const bodyChanged = patch(R.body, buildBody(view));
+    if (bodyChanged) observeThumbs();
     patch(R.status, layout === 'desktop' ? buildStatus(view) : '');
     patch(R.transfers, buildTransfers());
     renderOverlays();
@@ -760,6 +797,20 @@
     const cat = r.cat || 'other';
     const style = r.isTag ? ` style="--tile:${r.color}"` : '';
     return `<span class="tile t-${cat}${size ? ` tile-${size}` : ''}"${style}>${icon(CATEGORY[cat] ? CATEGORY[cat].glyph : 'file')}</span>`;
+  }
+  // A row's thumbnail where one exists, else its tile — pulsing while the
+  // thumbnail is being made.
+  function thumbTile(r, size) {
+    if (r.isFolder) return tile(r, size);
+    const url = thumbCache.get(r.key);
+    if (url) return `<img class="tile tile-img${size ? ` tile-${size}` : ''}" src="${url}" alt="" decoding="async" draggable="false">`;
+    const t = tile(r, size);
+    return thumbBusy.has(r.key) ? t.replace('class="tile ', 'class="tile loading ') : t;
+  }
+  // Marks a row for the scroll observer while it still needs a thumbnail.
+  function thumbAttr(r) {
+    if (r.isFolder || !state.autoThumbs || thumbCache.has(r.key) || thumbFailed.has(r.key) || !thumbEligible(r.file)) return '';
+    return ` data-thumb="${esc(r.key)}"`;
   }
   function tagChips(tags, removable) {
     return (tags || []).map((t) => (TAGS[t]
@@ -928,10 +979,10 @@
 
     if (state.viewMode === 'grid') {
       return `<div class="grid">${rows.map((r) => {
-        const thumb = !r.isFolder && thumbCache.get(r.id);
+        const thumb = !r.isFolder && thumbCache.get(r.key);
         return `
-          <div class="card${sel.has(r.key) ? ' sel' : ''}${state.focusKey === r.key ? ' focus' : ''}${dragClass(r)}" data-row="${esc(r.key)}"${draggable && !r.isFolder ? ' draggable="true"' : ''}>
-            <div class="card-art">${thumb ? `<img src="${thumb}" alt="" loading="lazy" decoding="async">` : tile(r, 'xl')}
+          <div class="card${sel.has(r.key) ? ' sel' : ''}${state.focusKey === r.key ? ' focus' : ''}${dragClass(r)}" data-row="${esc(r.key)}"${draggable && !r.isFolder ? ' draggable="true"' : ''}${thumbAttr(r)}>
+            <div class="card-art${thumb ? ' has-thumb' : ''}">${thumb ? `<img src="${thumb}" alt="" decoding="async">` : thumbTile(r, 'xl')}
               ${r.starred ? `<span class="card-star">${icon('starFill', 14)}</span>` : ''}
               <span class="card-check">${icon('check', 14)}</span>
             </div>
@@ -959,10 +1010,10 @@
         <span class="c-more"></span>
       </div>` : '';
     return `<div class="list">${head}${rows.map((r) => `
-      <div class="row${sel.has(r.key) ? ' sel' : ''}${state.focusKey === r.key ? ' focus' : ''}${dragClass(r)}" data-row="${esc(r.key)}"${draggable && !r.isFolder ? ' draggable="true"' : ''}>
+      <div class="row${sel.has(r.key) ? ' sel' : ''}${state.focusKey === r.key ? ' focus' : ''}${dragClass(r)}" data-row="${esc(r.key)}"${draggable && !r.isFolder ? ' draggable="true"' : ''}${thumbAttr(r)}>
         <span class="c-check">${icon('check', 14)}</span>
         <span class="c-name">
-          ${tile(r)}
+          ${thumbTile(r)}
           <span class="name-stack">
             <span class="name-text">${esc(r.name)}${r.starred ? `<span class="star-mark">${icon('starFill', 13)}</span>` : ''}${r.chunks && r.chunks.length > 1 ? `<span class="parts-chip" title="Stored as ${r.chunks.length} chunks">${r.chunks.length}×</span>` : ''}</span>
             ${(() => { const s = sub(r); return s ? `<span class="name-sub">${esc(s)}</span>` : ''; })()}
@@ -1105,7 +1156,7 @@
         <div class="nav-sep"></div>
         ${item('trash', 'trash', 'Trash', idx.trash.length)}
       </div>
-      <div class="storage">
+      <div class="storage clickable" data-act="open-storage" title="Storage overview">
         <div class="storage-k">Stored on Discord</div>
         <div class="storage-v">${fmtSize(idx.totalBytes) || '0 KB'}</div>
         <div class="storage-sub">${plural(idx.live.length, 'file')} · ${plural(idx.folderSet.size, 'folder')}</div>
@@ -1113,16 +1164,13 @@
   }
 
   function buildDetailBody(r, opts = {}) {
-    const f = r.file;
     let art;
-    if (THUMBABLE.has(r.cat) && (r.size || 0) > THUMB_MAX_BYTES) {
-      art = `${tile(r, 'xl')}<span class="art-note">Click to preview</span>`;
-    } else if (THUMBABLE.has(r.cat)) {
-      const t = state.detailThumb;
-      if (t && t.fileId === f.id && t.blobUrl) art = `<img src="${t.blobUrl}" alt="${esc(r.name)}">`;
-      else if (t && t.fileId === f.id && t.error) art = `${tile(r, 'xl')}<span class="art-note">${esc(t.error)}</span>`;
-      else art = `${tile(r, 'xl')}<span class="art-note">Loading preview…</span>`;
-    } else art = tile(r, 'xl');
+    const thumb = thumbCache.get(r.key);
+    if (thumb) art = `<img src="${thumb}" alt="${esc(r.name)}">`;
+    else if (THUMBABLE.has(r.cat) && !thumbEligible(r.file)) art = `${tile(r, 'xl')}<span class="art-note">Click to preview</span>`;
+    else if (thumbFailed.has(r.key)) art = `${tile(r, 'xl')}<span class="art-note">${esc(thumbFailed.get(r.key))}</span>`;
+    else if (THUMBABLE.has(r.cat)) art = `${tile(r, 'xl')}<span class="art-note">Loading preview…</span>`;
+    else art = tile(r, 'xl');
     const previewable = PREVIEWABLE.has(r.cat);
     const addable = Object.keys(TAGS).filter((t) => !r.tags.includes(t));
     const inTrash = r.trashed;
@@ -1139,6 +1187,7 @@
         <dt>Added</dt><dd>${esc(fmtDate(r.created))}</dd>
         <dt>Location</dt><dd>${r.path ? `<button class="link" data-nav="${esc(r.path)}">${esc(r.path)}</button>` : '<button class="link" data-nav="root">My Drive</button>'}</dd>
         <dt>Chunks</dt><dd>${r.chunks ? r.chunks.length : 0}</dd>
+        ${r.file && r.file.enc ? `<dt>Encryption</dt><dd>${icon('lock', 14)} End-to-end</dd>` : ''}
       </dl>
       <div class="detail-section">
         <div class="detail-label">Tags</div>
@@ -1152,7 +1201,8 @@
       <div class="action-list">
         ${inTrash
           ? `<button data-act="restore">${icon('restore', 18)}Restore</button>`
-          : `<button data-act="copy-link">${icon('link', 18)}Copy link</button>
+          : `${api.shareFile ? `<button data-act="share">${icon('upload', 18)}Share…</button>` : ''}
+             <button data-act="copy-link">${icon('link', 18)}Copy link</button>
              <button data-act="star">${icon(r.starred ? 'starFill' : 'star', 18)}${r.starred ? 'Unstar' : 'Star'}</button>
              <button data-act="rename">${icon('pencil', 18)}Rename</button>
              <button data-act="move">${icon('move', 18)}Move to…</button>
@@ -1277,6 +1327,8 @@
     prompt: () => (state.promptModal ? buildPromptModal() : ''),
     shortcuts: () => (state.shortcutsOpen ? buildShortcuts() : ''),
     legal: () => (state.legal ? buildLegal() : ''),
+    health: () => (state.health ? buildHealth() : ''),
+    storage: () => (state.storageOpen ? buildStorage() : ''),
     update: () => (state.updatePrompt ? buildUpdateModal() : ''),
     notice: () => (!state.privacySeen && !state.legal && state.connection.status !== 'connecting' ? buildPrivacyNotice() : ''),
     menu: () => (state.menu ? buildMenu() : ''),
@@ -1371,6 +1423,10 @@
               <div class="hint">Saved together with the connection.</div>
             </div>
 
+            ${buildSecuritySection()}
+            ${buildHealthSection()}
+            ${api.getCameraBackup ? buildCameraSection() : ''}
+
             <div class="settings-section">
               <h3>Appearance</h3>
               <div class="field">
@@ -1392,6 +1448,15 @@
                 </div>
               </div>
               <div class="field"><label>Density</label>${seg(state.density, ['comfortable', 'compact'], 'set-density')}</div>
+              <div class="field">
+                <label>Thumbnails</label>
+                <label class="check-row tight" data-act="toggle-thumbs">
+                  <span class="box ${state.autoThumbs ? 'on' : ''}">${state.autoThumbs ? icon('check', 14) : ''}</span>
+                  Load thumbnails for images, videos and PDFs as you scroll
+                </label>
+                <div class="hint">Each one downloads from Discord once (images and PDFs up to ${THUMB_MAX_BYTES / (1024 * 1024)} MB; for a video, only its first part), then is kept on this device. Turn it off to save data.</div>
+                <div class="settings-row"><button class="btn" data-act="clear-thumbs">Clear thumbnail cache</button></div>
+              </div>
             </div>
 
             <div class="settings-section">
@@ -1414,6 +1479,239 @@
         </section>
       </div>`;
   }
+
+  // ---- security, drive health, storage ------------------------------------------
+  function buildSecuritySection() {
+    const e = state.encryption;
+    const connected = state.connection.status === 'connected';
+    let body;
+    if (!connected || !e) {
+      body = '<div class="hint">Connect to a channel to set up encryption.</div>';
+    } else if (!e.configured) {
+      body = `
+        <div class="hint">Encrypts file contents on this device before they're uploaded, so Discord and anyone reading the channel only see scrambled chunks. File names, folders and sizes stay readable in the index.</div>
+        <div class="field"><label for="sec-pass">Passphrase</label><input type="password" class="input" id="sec-pass" data-bind="secPassInput" value="${esc(state.secPassInput)}" autocomplete="new-password" placeholder="At least 8 characters"></div>
+        <div class="field"><label for="sec-pass2">Repeat passphrase</label><input type="password" class="input" id="sec-pass2" data-bind="secPass2Input" value="${esc(state.secPass2Input)}" autocomplete="new-password"></div>
+        <div class="notice err">${icon('warn', 18)}<span>There's no way to recover a forgotten passphrase. Without it, encrypted files can't be opened, by you or anyone.</span></div>
+        <div class="settings-row"><button class="btn btn-primary" data-act="sec-setup" ${state.secBusy ? 'disabled' : ''}>${icon('lock', 18)}${state.secBusy ? 'Setting up…' : 'Turn on encryption'}</button></div>`;
+    } else if (!e.unlocked) {
+      body = `
+        <div class="notice">${icon('lock', 18)}<span>This drive is encrypted${e.encryptedFiles ? ` (${plural(e.encryptedFiles, 'file')})` : ''}. Enter the passphrase once to open and upload files on this device.</span></div>
+        <div class="field"><label for="sec-pass">Passphrase</label><input type="password" class="input" id="sec-pass" data-bind="secPassInput" value="${esc(state.secPassInput)}" autocomplete="current-password"></div>
+        <div class="settings-row"><button class="btn btn-primary" data-act="sec-unlock" ${state.secBusy ? 'disabled' : ''}>${state.secBusy ? 'Unlocking…' : 'Unlock'}</button></div>`;
+    } else {
+      body = `
+        <div class="notice ok">${icon('shield', 18)}<span>Unlocked on this device${e.encryptedFiles ? ` · ${plural(e.encryptedFiles, 'encrypted file')}` : ''}.</span></div>
+        <label class="check-row" data-act="sec-toggle-uploads">
+          <span class="box ${e.encryptUploads ? 'on' : ''}">${e.encryptUploads ? icon('check', 14) : ''}</span>
+          Encrypt new uploads
+        </label>
+        <div class="hint">Files uploaded before encryption was turned on stay as they were.</div>
+        <div class="settings-row">
+          <button class="btn" data-act="sec-change">Change passphrase</button>
+          <button class="btn btn-quiet" data-act="sec-lock">Lock on this device</button>
+        </div>`;
+    }
+    return `<div class="settings-section"><h3>Security</h3>${body}</div>`;
+  }
+
+  function buildHealthSection() {
+    const n = state.backups.length;
+    return `
+      <div class="settings-section">
+        <h3>Drive health</h3>
+        <div class="hint">The index of your files is backed up in the channel every 30 minutes while it changes (the last 10 are kept). Check drive compares the index with what's really in the channel, finds files whose chunks are gone, and recovers files the index lost.</div>
+        <div class="settings-row">
+          <button class="btn" data-act="health-check" ${state.connection.status !== 'connected' ? 'disabled' : ''}>${icon('shield', 18)}Check drive</button>
+          <button class="btn" data-act="health-open" ${state.connection.status !== 'connected' ? 'disabled' : ''}>Index backups${n ? ` (${n})` : ''}</button>
+          <button class="btn btn-quiet" data-act="open-storage">${icon('pie', 18)}Storage</button>
+        </div>
+      </div>`;
+  }
+
+  function buildCameraSection() {
+    const c = state.camera;
+    if (!c) return '';
+    return `
+      <div class="settings-section">
+        <h3>Camera backup</h3>
+        <label class="check-row" data-act="camera-toggle">
+          <span class="box ${c.enabled ? 'on' : ''}">${c.enabled ? icon('check', 14) : ''}</span>
+          Back up new photos and videos
+        </label>
+        <div class="hint">Uploads what's added to your camera folder (DCIM) to <b>${esc(c.folder)}</b>, sorted by month, whenever BeanyDrive is open. Files already in the drive are skipped.${c.lastRun ? ` Last checked ${esc(fmtDate(c.lastRun / 1000))}.` : ''}</div>
+        ${c.enabled && !c.granted ? `<div class="notice err">${icon('warn', 18)}<span>BeanyDrive needs access to your photos and videos.</span></div><div class="settings-row"><button class="btn" data-act="camera-permission">Allow access</button></div>` : ''}
+        <div class="settings-row">
+          <button class="btn" data-act="camera-folder">Change folder</button>
+          ${c.enabled ? '<button class="btn btn-quiet" data-act="camera-run">Back up now</button>' : ''}
+        </div>
+      </div>`;
+  }
+
+  function buildHealth() {
+    const h = state.health;
+    const r = h.report;
+    const busy = h.busy || h.checking;
+    const backups = state.backups.map((b) => `
+      <div class="health-row">
+        ${icon('clock', 18)}
+        <div class="grow"><div>${esc(fmtDate(b.at / 1000))}</div><div class="hint">${plural(b.files || 0, 'file')}</div></div>
+        <button class="btn btn-quiet" data-act="health-restore" data-id="${esc(b.id)}" ${busy ? 'disabled' : ''}>Restore</button>
+      </div>`).join('');
+    let check;
+    if (h.checking) check = '<p class="hint">Reading every message in the channel… This takes about a second per 100 messages.</p>';
+    else if (h.error) check = `<div class="notice err">${icon('warn', 18)}<span>${esc(h.error)}</span></div>`;
+    else if (!r) check = `<p class="hint">Not checked yet.</p>`;
+    else {
+      const complete = r.orphans.filter((o) => o.complete);
+      const partial = r.orphans.filter((o) => !o.complete);
+      const ok = !r.broken.length && !r.orphans.length;
+      check = `
+        <div class="notice ${ok ? 'ok' : ''}">${icon(ok ? 'check' : 'info', 18)}<span>Read ${r.messages} messages. ${r.files - r.broken.length} of ${plural(r.files, 'file')} are intact.${ok ? ' Nothing to fix.' : ''}</span></div>
+        ${r.broken.length ? `
+          <h4>Missing chunks</h4>
+          <p class="hint">Part of these files was deleted from the channel, so they can't be downloaded any more.</p>
+          ${r.broken.slice(0, 50).map((b) => `<div class="health-row">${icon('warn', 18)}<div class="grow"><div>${esc(b.name)}</div><div class="hint">${esc(b.path || 'My Drive')} · ${b.missing} of ${b.total} chunks missing</div></div></div>`).join('')}
+          <div class="settings-row"><button class="btn btn-danger" data-act="health-remove-broken" ${busy ? 'disabled' : ''}>Remove ${plural(r.broken.length, 'broken file')}</button></div>` : ''}
+        ${complete.length ? `
+          <h4>Not in the index</h4>
+          <p class="hint">Complete files in the channel that the index doesn't list (it was restored from a backup, or lost). Recovering puts them in a folder called Recovered.</p>
+          ${complete.slice(0, 50).map((o) => `<div class="health-row">${icon(o.enc ? 'lock' : 'file', 18)}<div class="grow"><div>${esc(o.name)}</div><div class="hint">${esc(fmtSize(o.size))} · ${esc(fmtDate(o.created))}</div></div></div>`).join('')}
+          <div class="settings-row"><button class="btn btn-primary" data-act="health-recover" ${busy ? 'disabled' : ''}>Recover ${plural(complete.length, 'file')}</button></div>` : ''}
+        ${partial.length ? `
+          <h4>Leftover chunks</h4>
+          <p class="hint">Pieces of ${plural(partial.length, 'upload')} that never finished. They can't be recovered.</p>
+          <div class="settings-row"><button class="btn" data-act="health-delete-orphans" ${busy ? 'disabled' : ''}>Delete leftovers</button></div>` : ''}`;
+    }
+    return modal('health-overlay', `
+      <div class="modal-head"><h2>Drive health</h2><button class="icon-btn" data-act="close-top">${icon('close')}</button></div>
+      <div class="health-body">
+        <h3>Check drive</h3>
+        ${check}
+        <div class="settings-row"><button class="btn" data-act="health-check" ${busy ? 'disabled' : ''}>${icon('refresh', 18)}${r ? 'Check again' : 'Check now'}</button></div>
+        <h3>Index backups</h3>
+        <p class="hint">Restoring replaces the file list with an earlier copy. The current list is backed up first, so a restore can be undone. Files uploaded since that copy show up under “Not in the index” in a check.</p>
+        ${backups || '<p class="hint">No backups yet. The first one is made the next time the index changes.</p>'}
+      </div>`, 'wide health-modal');
+  }
+
+  function storageStats() {
+    const idx = getIndex();
+    const byCat = new Map();
+    const byFolder = new Map();
+    const seenChunks = new Set();
+    let linkedBytes = 0, encBytes = 0, encCount = 0;
+    for (const f of state.files) {
+      const shared = f.chunks.length && seenChunks.has(f.chunks[0]);
+      f.chunks.forEach((c) => seenChunks.add(c));
+      if (shared) linkedBytes += f.size || 0;
+      if (f.trashed) continue;
+      if (f.enc) { encBytes += f.size || 0; encCount += 1; }
+      const cat = categoryFor(f.name);
+      const c = byCat.get(cat) || { n: 0, bytes: 0 };
+      c.n += 1; c.bytes += f.size || 0; byCat.set(cat, c);
+      const top = (f.path || '').split('/')[0] || '';
+      const d = byFolder.get(top) || { n: 0, bytes: 0 };
+      d.n += 1; d.bytes += f.size || 0; byFolder.set(top, d);
+    }
+    const trashBytes = idx.trash.reduce((n, f) => n + (f.size || 0), 0);
+    const largest = idx.live.slice().sort((a, b) => (b.size || 0) - (a.size || 0)).slice(0, 8);
+    return { idx, byCat, byFolder, trashBytes, linkedBytes, encBytes, encCount, chunks: seenChunks.size, largest };
+  }
+
+  function buildStorage() {
+    const st = storageStats();
+    const total = st.idx.totalBytes || 0;
+    const bars = (map, label) => {
+      const rows = [...map.entries()].sort((a, b) => b[1].bytes - a[1].bytes).slice(0, 8);
+      const max = Math.max(1, ...rows.map(([, v]) => v.bytes));
+      return rows.map(([k, v]) => `
+        <div class="stat-bar">
+          <span class="stat-name">${label(k)}</span>
+          <span class="stat-track"><i style="width:${Math.max(1, Math.round((v.bytes / max) * 100))}%"></i></span>
+          <span class="stat-val">${esc(fmtSize(v.bytes) || '0 KB')} · ${v.n}</span>
+        </div>`).join('') || '<p class="hint">No files yet.</p>';
+    };
+    const tiles = [
+      ['Stored', fmtSize(total) || '0 KB', plural(st.idx.live.length, 'file')],
+      ['Trash', fmtSize(st.trashBytes) || '0 KB', plural(st.idx.trash.length, 'file')],
+      ['Encrypted', fmtSize(st.encBytes) || '0 KB', plural(st.encCount, 'file')],
+      ['Saved by dedup', fmtSize(st.linkedBytes) || '0 KB', 'not uploaded twice'],
+      ['Chunk messages', String(st.chunks), `${plural(st.idx.folderSet.size, 'folder')}`],
+    ];
+    return modal('storage-overlay', `
+      <div class="modal-head"><h2>Storage</h2><button class="icon-btn" data-act="close-top">${icon('close')}</button></div>
+      <div class="health-body">
+        <div class="stat-tiles">${tiles.map(([k, v, sub]) => `<div class="stat-tile"><div class="stat-k">${k}</div><div class="stat-v">${esc(v)}</div><div class="hint">${esc(sub)}</div></div>`).join('')}</div>
+        <h3>By type</h3>
+        ${bars(st.byCat, (c) => `${icon(CATEGORY[c].glyph, 16)}${esc(CATEGORY[c].label)}`)}
+        <h3>By folder</h3>
+        ${bars(st.byFolder, (f) => `${icon(f ? 'folder' : 'drive', 16)}${esc(f || 'My Drive (top level)')}`)}
+        <h3>Largest files</h3>
+        ${st.largest.map((f) => `<div class="health-row">${icon(CATEGORY[categoryFor(f.name)].glyph, 18)}<div class="grow"><div>${esc(f.name)}</div><div class="hint">${esc(f.path || 'My Drive')}</div></div><span class="stat-val">${esc(fmtSize(f.size))}</span></div>`).join('') || '<p class="hint">No files yet.</p>'}
+        <p class="hint">Discord doesn't count this against any quota; these are the sizes as uploaded.</p>
+      </div>`, 'wide health-modal');
+  }
+
+  // ---- security / health actions ----
+  async function securityCall(promise, okMsg) {
+    state.secBusy = true;
+    render();
+    try {
+      const res = await promise;
+      if (res && res.encryption) state.encryption = res.encryption;
+      if (res && res.ok) {
+        state.secPassInput = '';
+        state.secPass2Input = '';
+        if (okMsg) showToast(okMsg, { kind: 'ok' });
+      } else {
+        showToast((res && res.error) || 'That didn\u2019t work', { kind: 'err' });
+      }
+    } catch (e) {
+      showToast(e.message || String(e), { kind: 'err' });
+    } finally {
+      state.secBusy = false;
+      render();
+    }
+  }
+  function securitySetup() {
+    const a = state.secPassInput;
+    if (a.length < 8) { showToast('Use a passphrase of at least 8 characters', { kind: 'err' }); return; }
+    if (a !== state.secPass2Input) { showToast('The passphrases don\u2019t match', { kind: 'err' }); return; }
+    securityCall(api.setupEncryption(a), 'Encryption is on. New uploads are encrypted.');
+  }
+  function securityChange() {
+    openPrompt({
+      title: 'New passphrase', value: '', submitLabel: 'Change', password: true,
+      message: 'Other devices keep working; enter the new passphrase only when setting up another one.',
+      onSubmit: (val) => securityCall(api.changePassphrase(val), 'Passphrase changed'),
+    });
+  }
+
+  async function runHealthCheck() {
+    state.health = { ...(state.health || {}), checking: true, error: null };
+    render();
+    const res = await api.checkDrive().catch((e) => ({ ok: false, error: e.message }));
+    if (!state.health) return;
+    state.health.checking = false;
+    if (res.ok) state.health.report = res.report; else state.health.error = res.error;
+    render();
+  }
+  async function healthAction(promise, msg) {
+    state.health.busy = true;
+    render();
+    const res = await promise.catch((e) => ({ ok: false, error: e.message }));
+    if (state.health) state.health.busy = false;
+    if (res.ok) { showToast(msg(res.count), { kind: 'ok' }); if (state.health) await runHealthCheck(); } else showToast(res.error, { kind: 'err' });
+    render();
+  }
+
+  // ---- camera backup (Android) ----
+  function refreshCamera() {
+    if (!api.getCameraBackup) return;
+    api.getCameraBackup().then((c) => { state.camera = c; render(); }).catch(() => {});
+  }
+  if (api.onCameraBackup) api.onCameraBackup((c) => { state.camera = c; render(); });
 
   function buildMovePicker() {
     const mp = state.movePicker;
@@ -1454,7 +1752,8 @@
     const cfg = state.promptModal;
     return modal('prompt-overlay', `
       <div class="modal-head"><h2>${esc(cfg.title)}</h2></div>
-      <input class="input" id="prompt-input" value="${esc(cfg.value || '')}" spellcheck="false" autocomplete="off" enterkeyhint="done">
+      ${cfg.message ? `<p class="hint">${esc(cfg.message)}</p>` : ''}
+      <input class="input" id="prompt-input" type="${cfg.password ? 'password' : 'text'}" value="${esc(cfg.value || '')}" spellcheck="false" autocomplete="off" enterkeyhint="done">
       <div class="modal-actions">
         <span class="grow"></span>
         <button class="btn" data-act="close-top">Cancel</button>
@@ -1543,7 +1842,7 @@
         <div class="pn-text">
           <b>Your files live in your own Discord channel.</b> BeanyDrive has no server and collects nothing.
           It talks to Discord with your bot token, and to GitHub to check for updates (you can turn that off in Settings).
-          Files aren't encrypted by BeanyDrive, so anyone who can read that channel can read them.
+          Files aren't encrypted unless you turn that on in Settings → Security; otherwise anyone who can read that channel can read them.
         </div>
         <div class="pn-actions">
           <button class="btn btn-quiet" data-act="legal" data-doc="PRIVACY">Privacy Policy</button>
@@ -1755,7 +2054,14 @@
       // eslint-disable-next-line no-await-in-loop
       const res = await apiCall(api.download(r.id, r.name));
       if (!res) return;
-      if (res.ok) { if (res.path) showToast(`Saved to ${res.path}`, { kind: 'ok' }); } else if (res.canceled) return;
+      if (res.ok) {
+        if (res.path) {
+          showToast(`Saved to ${res.path}`, {
+            kind: 'ok',
+            action: res.openable && api.openDownloaded ? { label: 'Open', fn: () => apiCall(api.openDownloaded(res), (o) => { if (o && !o.ok) showToast(o.error, { kind: 'err' }); }) } : null,
+          });
+        }
+      } else if (res.canceled) return;
       else showToast(`Download failed: ${res.error || ''}`, { kind: 'err' });
     }
   }
@@ -2080,10 +2386,12 @@
   function closeTop() {
     if (state.previewOverlay) { closePreviewOverlay(); return true; }
     if (state.menu) { state.menu = null; render(); return true; }
-    if (state.confirmModal) { state.confirmModal = null; render(); return true; }
+    if (state.confirmModal) { const c = state.confirmModal; state.confirmModal = null; render(); if (c.onCancel) c.onCancel(); return true; }
     if (state.promptModal) { closePrompt(); return true; }
     if (state.movePicker) { state.movePicker = null; render(); return true; }
     if (state.legal) { state.legal = null; render(); return true; }
+    if (state.health) { state.health = null; render(); return true; }
+    if (state.storageOpen) { state.storageOpen = false; render(); return true; }
     if (state.updatePrompt) { state.updatePrompt = null; render(); return true; }
     if (state.shortcutsOpen) { state.shortcutsOpen = false; render(); return true; }
     if (state.settingsOpen) { toggleSettings(); return true; }
@@ -2140,6 +2448,7 @@
     preview: () => { const r = targetFiles()[0]; if (r && PREVIEWABLE.has(r.cat)) openPreview(r.file); },
     download: () => downloadFiles(targetFiles()),
     'copy-link': copyLink,
+    share: () => { const f = targetFiles()[0]; state.sheet = null; if (f) apiCall(api.shareFile(f.id)); },
     star: starTargets,
     trash: trashTargets,
     restore: restoreTargets,
@@ -2201,6 +2510,64 @@
     legal: (el) => openLegal(el.dataset.doc),
     'md-link': (el) => followMarkdownLink(el.dataset.href),
     'privacy-ok': () => { state.privacySeen = true; ls.set('beanydrive_privacy_seen', '1'); render(); },
+    'toggle-thumbs': () => {
+      state.autoThumbs = !state.autoThumbs;
+      ls.set('beanydrive_thumbs', state.autoThumbs ? '1' : '0');
+      if (!state.autoThumbs) thumbQueue.length = 0; // the selected file's own request is re-made on render
+      if (R.body) R.body.__html = null; // rebuild rows with or without their data-thumb marks
+      render();
+    },
+    'clear-thumbs': clearThumbnails,
+    'open-storage': () => { state.storageOpen = true; render(); },
+    'sec-setup': securitySetup,
+    'sec-unlock': () => securityCall(api.unlockDrive(state.secPassInput), 'Unlocked'),
+    'sec-lock': () => openConfirm({
+      title: 'Lock on this device?',
+      message: 'Encrypted files stay safe in the channel. You\u2019ll need the passphrase to open them here again.',
+      confirmLabel: 'Lock', onConfirm: () => securityCall(api.lockDrive(), 'Locked on this device'),
+    }),
+    'sec-change': securityChange,
+    'sec-toggle-uploads': () => securityCall(api.setEncryptUploads(!(state.encryption && state.encryption.encryptUploads))),
+    'health-open': () => { state.health = state.health || { report: null }; render(); },
+    'health-check': () => runHealthCheck(),
+    'health-recover': () => {
+      const ids = state.health.report.orphans.filter((o) => o.complete).map((o) => o.fileId);
+      healthAction(api.recoverOrphans(ids), (n) => `Recovered ${plural(n, 'file')} into Recovered`);
+    },
+    'health-delete-orphans': () => openConfirm({
+      title: 'Delete leftover chunks?', danger: true, confirmLabel: 'Delete',
+      message: 'These are pieces of uploads that never finished. Deleting them can\u2019t be undone.',
+      onConfirm: () => healthAction(api.deleteOrphans(state.health.report.orphans.filter((o) => !o.complete).map((o) => o.fileId)), (n) => `Deleted ${plural(n, 'chunk')}`),
+    }),
+    'health-remove-broken': () => openConfirm({
+      title: 'Remove broken files?', danger: true, confirmLabel: 'Remove',
+      message: 'They\u2019re missing chunks, so they can\u2019t be downloaded. This takes them out of the drive and deletes what\u2019s left of them.',
+      onConfirm: () => healthAction(api.removeBroken(state.health.report.broken.map((b) => b.id)), (n) => `Removed ${plural(n, 'file')}`),
+    }),
+    'health-restore': (el) => {
+      const b = state.backups.find((x) => x.id === el.dataset.id);
+      openConfirm({
+        title: 'Restore this backup?', confirmLabel: 'Restore',
+        message: `The file list goes back to ${b ? fmtDate(b.at / 1000) : 'that copy'}. The current list is backed up first.`,
+        onConfirm: () => healthAction(api.restoreBackup(el.dataset.id), (n) => `Restored — ${plural(n, 'file')}`),
+      });
+    },
+    'camera-toggle': () => {
+      const c = state.camera;
+      if (c.enabled) { apiCall(api.setCameraBackup({ enabled: false }), (r) => { state.camera = r; render(); }); return; }
+      openConfirm({
+        title: 'Back up your camera?', confirmLabel: 'Turn on',
+        message: `New photos and videos go to ${c.folder}. They upload over any connection, mobile data included.`,
+        checkbox: 'Also back up photos and videos already on this phone',
+        onConfirm: (includeExisting) => apiCall(api.setCameraBackup({ enabled: true, includeExisting }), (r) => { state.camera = r; render(); }),
+      });
+    },
+    'camera-permission': () => apiCall(api.setCameraBackup({ requestPermission: true }), (r) => { state.camera = r; render(); }),
+    'camera-run': () => apiCall(api.runCameraBackup(), (r) => { state.camera = r; render(); showToast(r && r.queued ? `Backing up ${plural(r.queued, 'file')}` : 'Nothing new to back up', { kind: 'ok' }); }),
+    'camera-folder': () => openPrompt({
+      title: 'Camera backup folder', value: state.camera.folder, submitLabel: 'Save',
+      onSubmit: (val) => apiCall(api.setCameraBackup({ folder: val }), (r) => { state.camera = r; render(); }),
+    }),
     'toggle-auto-update': () => {
       state.autoUpdate = !state.autoUpdate;
       ls.set('beanydrive_auto_update', state.autoUpdate ? '1' : '0');
@@ -2461,9 +2828,6 @@
     return pdfjsLibPromise;
   }
 
-  // Auto-loads a small thumbnail for the focused image or PDF (first page
-  // only) — separate from openPreview()'s full-size view, which still only
-  // opens on click/'p'. Finished thumbnails go into thumbCache for the grid.
   // The bytes behind a preview, shared by the thumbnail and the full preview
   // so opening a file you just selected doesn't download it a second time.
   // Small LRU; anything big is dropped once used rather than held.
@@ -2482,58 +2846,249 @@
     return p;
   }
 
-  // Selecting a file shouldn't quietly pull hundreds of MB off Discord, so
-  // only small files get an automatic thumbnail; bigger ones preview on click.
+  // ---- thumbnails ------------------------------------------------------------
+  // Images and PDFs (first page) get a thumbnail in the list, the grid and
+  // the details panel, made in the background for whatever is on screen:
+  // rows and cards that still need one carry data-thumb, an
+  // IntersectionObserver queues them as they scroll into view (and drops the
+  // ones scrolled past before their turn), and two are made at a time.
+  //
+  // Each thumbnail is downscaled to THUMB_PX and saved in IndexedDB, so a
+  // file is downloaded from Discord for its thumbnail once, not every launch.
+  // Only files up to THUMB_MAX_BYTES qualify: scrolling past a folder of
+  // camera RAWs shouldn't quietly pull gigabytes off Discord.
   const THUMB_MAX_BYTES = 25 * 1024 * 1024;
-  function ensureDetailThumb(selFile) {
-    const cat = selFile ? categoryFor(selFile.name) : null;
-    const wantId = cat && THUMBABLE.has(cat) && (selFile.size || 0) <= THUMB_MAX_BYTES ? selFile.id : null;
-    if (state.detailThumb && state.detailThumb.fileId === wantId) return;
-    if (!wantId) { state.detailThumb = null; return; }
-    const cached = thumbCache.get(wantId);
-    if (cached) { state.detailThumb = { fileId: wantId, loading: false, blobUrl: cached, error: null }; return; }
-    const token = ++detailThumbToken;
-    state.detailThumb = { fileId: wantId, loading: true, blobUrl: null, error: null };
-    const done = (url) => {
-      if (token !== detailThumbToken || !state.detailThumb) return;
-      cacheThumb(wantId, url);
-      state.detailThumb.blobUrl = url;
-      state.detailThumb.loading = false;
-      render();
-    };
-    const fail = (msg) => {
-      if (token !== detailThumbToken || !state.detailThumb) return;
-      state.detailThumb.loading = false;
-      state.detailThumb.error = msg;
-      render();
-    };
-    getPreviewBytes(wantId).then(async (res) => {
-      if (token !== detailThumbToken) return;
-      if (!res.ok) { fail(res.error || 'Preview failed'); return; }
-      const blob = new Blob([res.bytes], { type: res.mime });
-      if (cat === 'image') { done(URL.createObjectURL(blob)); return; }
-      // pdf: render page 1 onto an offscreen canvas, then snapshot it to an
-      // image blob — keeps the thumbnail a plain <img>, like the image case.
+  const THUMB_PX = 360;
+  const THUMB_CONCURRENCY = 2;
+  const THUMB_STORE_MAX = 3000;
+  const thumbQueue = [];          // String ids, next first
+  const thumbBusy = new Set();    // being made right now
+  const thumbFailed = new Map();  // id → reason; not retried this session
+
+  // On-disk cache. IndexedDB is per-origin (app://bundle on desktop, the
+  // WebView's origin on Android) and survives restarts. Every call degrades
+  // to a miss if storage is unavailable.
+  const thumbStore = (() => {
+    let dbp = null;
+    const open = () => dbp || (dbp = new Promise((resolve) => {
       try {
-        const pdfjsLib = await loadPdfjs();
-        if (token !== detailThumbToken) return;
-        const pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
-        if (token !== detailThumbToken) return;
-        const page = await pdfDoc.getPage(1);
-        if (token !== detailThumbToken) return;
-        const unscaled = page.getViewport({ scale: 1 });
-        const scale = Math.min(1.5, 360 / unscaled.width, 360 / unscaled.height);
-        const viewport = page.getViewport({ scale });
-        const canvas = document.createElement('canvas');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-        if (token !== detailThumbToken) return;
-        canvas.toBlob((pngBlob) => done(URL.createObjectURL(pngBlob)));
-      } catch (err) {
-        fail(`Couldn't render PDF: ${err.message}`);
-      }
-    }).catch((err) => fail(err.message || String(err)));
+        const req = indexedDB.open('beanydrive-thumbs', 1);
+        req.onupgradeneeded = () => req.result.createObjectStore('thumbs');
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      } catch (e) { resolve(null); }
+    }));
+    const run = async (mode, fn) => {
+      const db = await open();
+      if (!db) return null;
+      return new Promise((resolve) => {
+        try {
+          const t = db.transaction('thumbs', mode);
+          const req = fn(t.objectStore('thumbs'));
+          t.oncomplete = () => resolve(req && 'result' in req ? req.result : null);
+          t.onerror = () => resolve(null);
+          t.onabort = () => resolve(null);
+        } catch (e) { resolve(null); }
+      });
+    };
+    return {
+      get: async (key) => { const v = await run('readonly', (s) => s.get(key)); return v && v.blob ? v.blob : null; },
+      put: (key, blob) => run('readwrite', (s) => s.put({ blob, t: Date.now() }, key)),
+      clear: () => run('readwrite', (s) => s.clear()),
+      count: () => run('readonly', (s) => s.count()),
+      // Keeps the newest `max` thumbnails by when they were made.
+      async prune(max) {
+        const db = await open();
+        if (!db) return;
+        const items = await new Promise((resolve) => {
+          const out = [];
+          try {
+            const cur = db.transaction('thumbs').objectStore('thumbs').openCursor();
+            cur.onsuccess = () => { const c = cur.result; if (c) { out.push([c.key, (c.value && c.value.t) || 0]); c.continue(); } else resolve(out); };
+            cur.onerror = () => resolve(out);
+          } catch (e) { resolve(out); }
+        });
+        if (items.length <= max) return;
+        items.sort((a, b) => a[1] - b[1]);
+        await run('readwrite', (s) => { items.slice(0, items.length - max).forEach(([k]) => s.delete(k)); return null; });
+      },
+    };
+  })();
+  setTimeout(() => thumbStore.prune(THUMB_STORE_MAX), 15000);
+
+  // A video streams (where the platform can), so only the start of it is
+  // fetched and its size doesn't matter.
+  function thumbEligible(f) {
+    if (!f) return false;
+    const cat = categoryFor(f.name);
+    if (!THUMBABLE.has(cat)) return false;
+    if (cat === 'video' && api.streamUrl) return (f.size || 0) > 0;
+    return (f.size || 0) <= THUMB_MAX_BYTES;
+  }
+  function requestThumb(id, urgent) {
+    id = String(id);
+    if (thumbCache.has(id) || thumbBusy.has(id) || thumbFailed.has(id)) return;
+    const at = thumbQueue.indexOf(id);
+    if (at !== -1) {
+      if (!urgent) return;
+      thumbQueue.splice(at, 1);
+    }
+    if (urgent) thumbQueue.unshift(id); else thumbQueue.push(id);
+    pumpThumbs();
+  }
+  function cancelThumb(id) {
+    const at = thumbQueue.indexOf(String(id));
+    if (at !== -1) thumbQueue.splice(at, 1);
+  }
+  function pumpThumbs() {
+    while (thumbBusy.size < THUMB_CONCURRENCY && thumbQueue.length) {
+      const id = thumbQueue.shift();
+      thumbBusy.add(id);
+      render(); // shows the row's loading state
+      makeThumb(id)
+        .then((url) => cacheThumb(id, url))
+        .catch((e) => thumbFailed.set(id, e.message || String(e)))
+        .finally(() => { thumbBusy.delete(id); render(); pumpThumbs(); });
+    }
+  }
+  async function makeThumb(id) {
+    const f = getIndex().byKey.get(id);
+    if (!f) throw new Error('File not found');
+    // Size is part of the key: a file id never changes content, but this
+    // keeps a stale entry from ever matching a different file.
+    const key = `${id}:${f.size}`;
+    const stored = await thumbStore.get(key);
+    if (stored) return URL.createObjectURL(stored);
+    const cat = categoryFor(f.name);
+    let canvas;
+    if (cat === 'video' && api.streamUrl) {
+      canvas = await videoFrame(api.streamUrl(f.id));
+    } else {
+      const res = await getPreviewBytes(f.id);
+      if (!res.ok) throw new Error(res.error || 'Preview failed');
+      const source = new Blob([res.bytes], { type: res.mime });
+      if (cat === 'pdf') canvas = await pdfFirstPage(source);
+      else if (cat === 'video') {
+        const url = URL.createObjectURL(source);
+        try { canvas = await videoFrame(url); } finally { URL.revokeObjectURL(url); }
+      } else canvas = await downscaleImage(source);
+    }
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', 0.82));
+    if (!blob) throw new Error("Couldn't make a thumbnail");
+    thumbStore.put(key, blob);
+    return URL.createObjectURL(blob);
+  }
+  // Through an <img> rather than createImageBitmap, which can't read SVG.
+  async function downscaleImage(blob) {
+    const url = URL.createObjectURL(blob);
+    try {
+      const img = new Image();
+      img.src = url;
+      try { await img.decode(); } catch (e) { throw new Error("Can't read this image"); }
+      const w = img.naturalWidth || THUMB_PX;
+      const h = img.naturalHeight || THUMB_PX;
+      const s = Math.min(1, THUMB_PX / Math.max(w, h));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(w * s));
+      c.height = Math.max(1, Math.round(h * s));
+      const g = c.getContext('2d');
+      g.imageSmoothingQuality = 'high';
+      g.drawImage(img, 0, 0, c.width, c.height);
+      return c;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+  // A frame from a little way in (the very first is often black), drawn from a
+  // muted, unattached <video>.
+  function videoFrame(src) {
+    return new Promise((resolve, reject) => {
+      const v = document.createElement('video');
+      v.muted = true;
+      v.playsInline = true;
+      v.preload = 'auto';
+      let done = false;
+      const finish = (err, canvas) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        v.removeAttribute('src');
+        v.load();
+        if (err) reject(err); else resolve(canvas);
+      };
+      const timer = setTimeout(() => finish(new Error("Couldn't read this video")), 30000);
+      v.addEventListener('error', () => finish(new Error("Can't play this video format")));
+      v.addEventListener('loadedmetadata', () => {
+        v.currentTime = Math.min(1, (v.duration || 2) / 4);
+      });
+      v.addEventListener('seeked', () => {
+        const w = v.videoWidth || THUMB_PX;
+        const h = v.videoHeight || THUMB_PX;
+        const sc = Math.min(1, THUMB_PX / Math.max(w, h));
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(w * sc));
+        c.height = Math.max(1, Math.round(h * sc));
+        const g = c.getContext('2d');
+        g.imageSmoothingQuality = 'high';
+        try {
+          g.drawImage(v, 0, 0, c.width, c.height);
+          finish(null, c);
+        } catch (e) {
+          finish(e);
+        }
+      });
+      v.src = src;
+    });
+  }
+  async function pdfFirstPage(blob) {
+    const pdfjsLib = await loadPdfjs();
+    const doc = await pdfjsLib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
+    try {
+      const page = await doc.getPage(1);
+      const unscaled = page.getViewport({ scale: 1 });
+      const viewport = page.getViewport({ scale: Math.min(2, THUMB_PX / Math.max(unscaled.width, unscaled.height)) });
+      const c = document.createElement('canvas');
+      c.width = Math.ceil(viewport.width);
+      c.height = Math.ceil(viewport.height);
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff'; // PDFs assume white paper
+      g.fillRect(0, 0, c.width, c.height);
+      await page.render({ canvasContext: g, viewport }).promise;
+      return c;
+    } finally {
+      doc.destroy();
+    }
+  }
+  async function clearThumbnails() {
+    await thumbStore.clear();
+    for (const url of thumbCache.values()) URL.revokeObjectURL(url);
+    thumbCache.clear();
+    thumbFailed.clear();
+    showToast('Thumbnail cache cleared', { kind: 'ok' });
+    render();
+  }
+
+  // The details panel always wants the selected file's thumbnail, first in
+  // line, even with background thumbnails turned off.
+  function ensureDetailThumb(selFile) {
+    if (thumbEligible(selFile)) requestThumb(selFile.id, true);
+  }
+
+  // Watches the list for rows that need a thumbnail. Re-armed after every
+  // rebuild of the list (rows are new nodes each time).
+  let thumbObserver = null;
+  function observeThumbs() {
+    if (thumbObserver) thumbObserver.disconnect();
+    if (!state.autoThumbs || !R.body || typeof IntersectionObserver === 'undefined') return;
+    if (!thumbObserver || thumbObserver.root !== R.body) {
+      thumbObserver = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          const id = e.target.dataset.thumb;
+          if (e.isIntersecting) requestThumb(id); else cancelThumb(id);
+        }
+      }, { root: R.body, rootMargin: '300px 0px' });
+    }
+    R.body.querySelectorAll('[data-thumb]').forEach((el) => thumbObserver.observe(el));
   }
 
   function openPreview(f) {
@@ -2550,6 +3105,15 @@
     };
     render();
     renderPreviewOverlay();
+
+    // Streamed: playback starts as soon as the first chunk arrives, and
+    // seeking fetches only the chunks it lands in.
+    const cat0 = state.previewOverlay.category;
+    if ((cat0 === 'video' || cat0 === 'audio') && api.streamUrl) {
+      Object.assign(state.previewOverlay, { blobUrl: api.streamUrl(f.id), streamed: true, loading: false });
+      renderPreviewOverlay();
+      return;
+    }
 
     getPreviewBytes(f.id).then(async (res) => {
       if (token !== pdfPreviewToken) return; // closed or replaced while this was in flight
@@ -2645,7 +3209,7 @@
   function releasePreview() {
     const p = state.previewOverlay;
     if (!p) return;
-    if (p.blobUrl) URL.revokeObjectURL(p.blobUrl);
+    if (p.blobUrl && !p.streamed) URL.revokeObjectURL(p.blobUrl);
     // Every image pulled out of a Word/PowerPoint file is its own blob.
     if (p.objectUrls) p.objectUrls.forEach((u) => URL.revokeObjectURL(u));
   }
@@ -2765,6 +3329,7 @@
     applyStatusSnapshot(await api.getStatus());
     render();
     api.getAppVersion().then((v) => { state.appVersion = v; if (state.settingsOpen) render(); });
+    refreshCamera();
     // A quiet check a few seconds in, unless turned off in Settings → About;
     // it only speaks up when something newer exists.
     if (state.autoUpdate) {

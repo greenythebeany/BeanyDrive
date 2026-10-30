@@ -26,6 +26,7 @@ if /I "%~1"=="release" set "TASK=assembleRelease"
 echo Rebuilding web assets...
 call npm run build || exit /b 1
 call npx cap sync android || exit /b 1
+call node native\install.mjs || exit /b 1
 
 echo Running gradle %TASK%...
 REM Absolute path on purpose: this machine has NoDefaultCurrentDirectoryInExePath
