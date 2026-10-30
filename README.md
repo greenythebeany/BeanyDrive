@@ -461,9 +461,13 @@ inject markup, scripts, or outbound requests into the app.
 - **Trash vs. permanent delete**: moving a file to Trash only flips a flag
   in the index; its chunks stay until you **Empty Trash**, which is one
   DELETE per chunk and reports progress in the transfers card.
-- **Thumbnails**: the details panel loads a thumbnail for images and PDFs up
-  to 25 MB. Bigger files show their icon and preview on click, so selecting
-  something never quietly pulls hundreds of MB off Discord.
+- **Thumbnails**: images and PDFs up to 25 MB get a thumbnail in the list, the
+  grid and the details panel, loaded for whatever is on screen as you scroll
+  (two at a time; rows scrolled past before their turn are skipped). Each is
+  downscaled and kept on your device, so a file is downloaded for its
+  thumbnail once, not every launch. Bigger files show their icon and preview
+  on click. Turn background thumbnails off, or clear them, in Settings →
+  Appearance.
 - **Drag out**: an OS drag has to hand over a file that already exists on
   disk, so dragging a file that isn't cached yet starts the download, and you
   drag again once it's ready. Copies live in `drag-cache` beside the config,

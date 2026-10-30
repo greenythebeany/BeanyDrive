@@ -284,20 +284,21 @@
     dragReady: new Set(),     // file ids with a local copy, draggable right now
     dragPreparing: new Set(), // file ids currently being fetched for a drag
     previewOverlay: null,
-    detailThumb: null,
+    autoThumbs: ls.get('beanydrive_thumbs', '1') !== '0', // thumbnails for rows scrolled into view
   };
 
   let pdfjsLibPromise = null; // lazy-loaded, cached — only fetched the first time a PDF is previewed
   let pdfPreviewToken = 0; // bumped on every openPreview()/close so a stale async render can't stomp a newer one
-  let detailThumbToken = 0; // bumped whenever the selection changes so a stale thumb fetch can't stomp a newer one
   let toastSeq = 0;
   let dragCounter = 0;
 
-  // Thumbnails cost a full download from Discord, so the ones already fetched
-  // for the detail pane are kept (LRU) and reused by the grid view.
-  const THUMB_CACHE_MAX = 60;
-  const thumbCache = new Map(); // file id → blob URL
+  // Thumbnails in memory, as blob URLs of small downscaled images (LRU).
+  // Evicted ones are still in the on-disk store, so they come back without
+  // another download. Keyed by String(file id) throughout.
+  const THUMB_CACHE_MAX = 400;
+  const thumbCache = new Map(); // String(file id) → blob URL
   function cacheThumb(id, url) {
+    id = String(id);
     thumbCache.delete(id);
     thumbCache.set(id, url);
     while (thumbCache.size > THUMB_CACHE_MAX) {
@@ -739,6 +740,7 @@
     patch(R.head, buildHead(view));
     patch(R.selbar, buildSelectionBar());
     const bodyChanged = patch(R.body, buildBody(view));
+    if (bodyChanged) observeThumbs();
     patch(R.status, layout === 'desktop' ? buildStatus(view) : '');
     patch(R.transfers, buildTransfers());
     renderOverlays();
@@ -760,6 +762,20 @@
     const cat = r.cat || 'other';
     const style = r.isTag ? ` style="--tile:${r.color}"` : '';
     return `<span class="tile t-${cat}${size ? ` tile-${size}` : ''}"${style}>${icon(CATEGORY[cat] ? CATEGORY[cat].glyph : 'file')}</span>`;
+  }
+  // A row's thumbnail where one exists, else its tile — pulsing while the
+  // thumbnail is being made.
+  function thumbTile(r, size) {
+    if (r.isFolder) return tile(r, size);
+    const url = thumbCache.get(r.key);
+    if (url) return `<img class="tile tile-img${size ? ` tile-${size}` : ''}" src="${url}" alt="" decoding="async" draggable="false">`;
+    const t = tile(r, size);
+    return thumbBusy.has(r.key) ? t.replace('class="tile ', 'class="tile loading ') : t;
+  }
+  // Marks a row for the scroll observer while it still needs a thumbnail.
+  function thumbAttr(r) {
+    if (r.isFolder || !state.autoThumbs || thumbCache.has(r.key) || thumbFailed.has(r.key) || !thumbEligible(r.file)) return '';
+    return ` data-thumb="${esc(r.key)}"`;
   }
   function tagChips(tags, removable) {
     return (tags || []).map((t) => (TAGS[t]
@@ -928,10 +944,10 @@
 
     if (state.viewMode === 'grid') {
       return `<div class="grid">${rows.map((r) => {
-        const thumb = !r.isFolder && thumbCache.get(r.id);
+        const thumb = !r.isFolder && thumbCache.get(r.key);
         return `
-          <div class="card${sel.has(r.key) ? ' sel' : ''}${state.focusKey === r.key ? ' focus' : ''}${dragClass(r)}" data-row="${esc(r.key)}"${draggable && !r.isFolder ? ' draggable="true"' : ''}>
-            <div class="card-art">${thumb ? `<img src="${thumb}" alt="" loading="lazy" decoding="async">` : tile(r, 'xl')}
+          <div class="card${sel.has(r.key) ? ' sel' : ''}${state.focusKey === r.key ? ' focus' : ''}${dragClass(r)}" data-row="${esc(r.key)}"${draggable && !r.isFolder ? ' draggable="true"' : ''}${thumbAttr(r)}>
+            <div class="card-art${thumb ? ' has-thumb' : ''}">${thumb ? `<img src="${thumb}" alt="" decoding="async">` : thumbTile(r, 'xl')}
               ${r.starred ? `<span class="card-star">${icon('starFill', 14)}</span>` : ''}
               <span class="card-check">${icon('check', 14)}</span>
             </div>
@@ -959,10 +975,10 @@
         <span class="c-more"></span>
       </div>` : '';
     return `<div class="list">${head}${rows.map((r) => `
-      <div class="row${sel.has(r.key) ? ' sel' : ''}${state.focusKey === r.key ? ' focus' : ''}${dragClass(r)}" data-row="${esc(r.key)}"${draggable && !r.isFolder ? ' draggable="true"' : ''}>
+      <div class="row${sel.has(r.key) ? ' sel' : ''}${state.focusKey === r.key ? ' focus' : ''}${dragClass(r)}" data-row="${esc(r.key)}"${draggable && !r.isFolder ? ' draggable="true"' : ''}${thumbAttr(r)}>
         <span class="c-check">${icon('check', 14)}</span>
         <span class="c-name">
-          ${tile(r)}
+          ${thumbTile(r)}
           <span class="name-stack">
             <span class="name-text">${esc(r.name)}${r.starred ? `<span class="star-mark">${icon('starFill', 13)}</span>` : ''}${r.chunks && r.chunks.length > 1 ? `<span class="parts-chip" title="Stored as ${r.chunks.length} chunks">${r.chunks.length}×</span>` : ''}</span>
             ${(() => { const s = sub(r); return s ? `<span class="name-sub">${esc(s)}</span>` : ''; })()}
@@ -1113,16 +1129,13 @@
   }
 
   function buildDetailBody(r, opts = {}) {
-    const f = r.file;
     let art;
-    if (THUMBABLE.has(r.cat) && (r.size || 0) > THUMB_MAX_BYTES) {
-      art = `${tile(r, 'xl')}<span class="art-note">Click to preview</span>`;
-    } else if (THUMBABLE.has(r.cat)) {
-      const t = state.detailThumb;
-      if (t && t.fileId === f.id && t.blobUrl) art = `<img src="${t.blobUrl}" alt="${esc(r.name)}">`;
-      else if (t && t.fileId === f.id && t.error) art = `${tile(r, 'xl')}<span class="art-note">${esc(t.error)}</span>`;
-      else art = `${tile(r, 'xl')}<span class="art-note">Loading preview…</span>`;
-    } else art = tile(r, 'xl');
+    const thumb = thumbCache.get(r.key);
+    if (thumb) art = `<img src="${thumb}" alt="${esc(r.name)}">`;
+    else if (THUMBABLE.has(r.cat) && (r.size || 0) > THUMB_MAX_BYTES) art = `${tile(r, 'xl')}<span class="art-note">Click to preview</span>`;
+    else if (thumbFailed.has(r.key)) art = `${tile(r, 'xl')}<span class="art-note">${esc(thumbFailed.get(r.key))}</span>`;
+    else if (THUMBABLE.has(r.cat)) art = `${tile(r, 'xl')}<span class="art-note">Loading preview…</span>`;
+    else art = tile(r, 'xl');
     const previewable = PREVIEWABLE.has(r.cat);
     const addable = Object.keys(TAGS).filter((t) => !r.tags.includes(t));
     const inTrash = r.trashed;
@@ -1392,6 +1405,15 @@
                 </div>
               </div>
               <div class="field"><label>Density</label>${seg(state.density, ['comfortable', 'compact'], 'set-density')}</div>
+              <div class="field">
+                <label>Thumbnails</label>
+                <label class="check-row tight" data-act="toggle-thumbs">
+                  <span class="box ${state.autoThumbs ? 'on' : ''}">${state.autoThumbs ? icon('check', 14) : ''}</span>
+                  Load thumbnails for images and PDFs as you scroll
+                </label>
+                <div class="hint">Each one downloads the file from Discord once (files up to ${THUMB_MAX_BYTES / (1024 * 1024)} MB), then is kept on this device. Turn it off to save data.</div>
+                <div class="settings-row"><button class="btn" data-act="clear-thumbs">Clear thumbnail cache</button></div>
+              </div>
             </div>
 
             <div class="settings-section">
@@ -2201,6 +2223,14 @@
     legal: (el) => openLegal(el.dataset.doc),
     'md-link': (el) => followMarkdownLink(el.dataset.href),
     'privacy-ok': () => { state.privacySeen = true; ls.set('beanydrive_privacy_seen', '1'); render(); },
+    'toggle-thumbs': () => {
+      state.autoThumbs = !state.autoThumbs;
+      ls.set('beanydrive_thumbs', state.autoThumbs ? '1' : '0');
+      if (!state.autoThumbs) thumbQueue.length = 0; // the selected file's own request is re-made on render
+      if (R.body) R.body.__html = null; // rebuild rows with or without their data-thumb marks
+      render();
+    },
+    'clear-thumbs': clearThumbnails,
     'toggle-auto-update': () => {
       state.autoUpdate = !state.autoUpdate;
       ls.set('beanydrive_auto_update', state.autoUpdate ? '1' : '0');
@@ -2461,9 +2491,6 @@
     return pdfjsLibPromise;
   }
 
-  // Auto-loads a small thumbnail for the focused image or PDF (first page
-  // only) — separate from openPreview()'s full-size view, which still only
-  // opens on click/'p'. Finished thumbnails go into thumbCache for the grid.
   // The bytes behind a preview, shared by the thumbnail and the full preview
   // so opening a file you just selected doesn't download it a second time.
   // Small LRU; anything big is dropped once used rather than held.
@@ -2482,58 +2509,192 @@
     return p;
   }
 
-  // Selecting a file shouldn't quietly pull hundreds of MB off Discord, so
-  // only small files get an automatic thumbnail; bigger ones preview on click.
+  // ---- thumbnails ------------------------------------------------------------
+  // Images and PDFs (first page) get a thumbnail in the list, the grid and
+  // the details panel, made in the background for whatever is on screen:
+  // rows and cards that still need one carry data-thumb, an
+  // IntersectionObserver queues them as they scroll into view (and drops the
+  // ones scrolled past before their turn), and two are made at a time.
+  //
+  // Each thumbnail is downscaled to THUMB_PX and saved in IndexedDB, so a
+  // file is downloaded from Discord for its thumbnail once, not every launch.
+  // Only files up to THUMB_MAX_BYTES qualify: scrolling past a folder of
+  // camera RAWs shouldn't quietly pull gigabytes off Discord.
   const THUMB_MAX_BYTES = 25 * 1024 * 1024;
-  function ensureDetailThumb(selFile) {
-    const cat = selFile ? categoryFor(selFile.name) : null;
-    const wantId = cat && THUMBABLE.has(cat) && (selFile.size || 0) <= THUMB_MAX_BYTES ? selFile.id : null;
-    if (state.detailThumb && state.detailThumb.fileId === wantId) return;
-    if (!wantId) { state.detailThumb = null; return; }
-    const cached = thumbCache.get(wantId);
-    if (cached) { state.detailThumb = { fileId: wantId, loading: false, blobUrl: cached, error: null }; return; }
-    const token = ++detailThumbToken;
-    state.detailThumb = { fileId: wantId, loading: true, blobUrl: null, error: null };
-    const done = (url) => {
-      if (token !== detailThumbToken || !state.detailThumb) return;
-      cacheThumb(wantId, url);
-      state.detailThumb.blobUrl = url;
-      state.detailThumb.loading = false;
-      render();
-    };
-    const fail = (msg) => {
-      if (token !== detailThumbToken || !state.detailThumb) return;
-      state.detailThumb.loading = false;
-      state.detailThumb.error = msg;
-      render();
-    };
-    getPreviewBytes(wantId).then(async (res) => {
-      if (token !== detailThumbToken) return;
-      if (!res.ok) { fail(res.error || 'Preview failed'); return; }
-      const blob = new Blob([res.bytes], { type: res.mime });
-      if (cat === 'image') { done(URL.createObjectURL(blob)); return; }
-      // pdf: render page 1 onto an offscreen canvas, then snapshot it to an
-      // image blob — keeps the thumbnail a plain <img>, like the image case.
+  const THUMB_PX = 360;
+  const THUMB_CONCURRENCY = 2;
+  const THUMB_STORE_MAX = 3000;
+  const thumbQueue = [];          // String ids, next first
+  const thumbBusy = new Set();    // being made right now
+  const thumbFailed = new Map();  // id → reason; not retried this session
+
+  // On-disk cache. IndexedDB is per-origin (app://bundle on desktop, the
+  // WebView's origin on Android) and survives restarts. Every call degrades
+  // to a miss if storage is unavailable.
+  const thumbStore = (() => {
+    let dbp = null;
+    const open = () => dbp || (dbp = new Promise((resolve) => {
       try {
-        const pdfjsLib = await loadPdfjs();
-        if (token !== detailThumbToken) return;
-        const pdfDoc = await pdfjsLib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
-        if (token !== detailThumbToken) return;
-        const page = await pdfDoc.getPage(1);
-        if (token !== detailThumbToken) return;
-        const unscaled = page.getViewport({ scale: 1 });
-        const scale = Math.min(1.5, 360 / unscaled.width, 360 / unscaled.height);
-        const viewport = page.getViewport({ scale });
-        const canvas = document.createElement('canvas');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-        if (token !== detailThumbToken) return;
-        canvas.toBlob((pngBlob) => done(URL.createObjectURL(pngBlob)));
-      } catch (err) {
-        fail(`Couldn't render PDF: ${err.message}`);
-      }
-    }).catch((err) => fail(err.message || String(err)));
+        const req = indexedDB.open('beanydrive-thumbs', 1);
+        req.onupgradeneeded = () => req.result.createObjectStore('thumbs');
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      } catch (e) { resolve(null); }
+    }));
+    const run = async (mode, fn) => {
+      const db = await open();
+      if (!db) return null;
+      return new Promise((resolve) => {
+        try {
+          const t = db.transaction('thumbs', mode);
+          const req = fn(t.objectStore('thumbs'));
+          t.oncomplete = () => resolve(req && 'result' in req ? req.result : null);
+          t.onerror = () => resolve(null);
+          t.onabort = () => resolve(null);
+        } catch (e) { resolve(null); }
+      });
+    };
+    return {
+      get: async (key) => { const v = await run('readonly', (s) => s.get(key)); return v && v.blob ? v.blob : null; },
+      put: (key, blob) => run('readwrite', (s) => s.put({ blob, t: Date.now() }, key)),
+      clear: () => run('readwrite', (s) => s.clear()),
+      count: () => run('readonly', (s) => s.count()),
+      // Keeps the newest `max` thumbnails by when they were made.
+      async prune(max) {
+        const db = await open();
+        if (!db) return;
+        const items = await new Promise((resolve) => {
+          const out = [];
+          try {
+            const cur = db.transaction('thumbs').objectStore('thumbs').openCursor();
+            cur.onsuccess = () => { const c = cur.result; if (c) { out.push([c.key, (c.value && c.value.t) || 0]); c.continue(); } else resolve(out); };
+            cur.onerror = () => resolve(out);
+          } catch (e) { resolve(out); }
+        });
+        if (items.length <= max) return;
+        items.sort((a, b) => a[1] - b[1]);
+        await run('readwrite', (s) => { items.slice(0, items.length - max).forEach(([k]) => s.delete(k)); return null; });
+      },
+    };
+  })();
+  setTimeout(() => thumbStore.prune(THUMB_STORE_MAX), 15000);
+
+  function thumbEligible(f) {
+    return !!f && THUMBABLE.has(categoryFor(f.name)) && (f.size || 0) <= THUMB_MAX_BYTES;
+  }
+  function requestThumb(id, urgent) {
+    id = String(id);
+    if (thumbCache.has(id) || thumbBusy.has(id) || thumbFailed.has(id)) return;
+    const at = thumbQueue.indexOf(id);
+    if (at !== -1) {
+      if (!urgent) return;
+      thumbQueue.splice(at, 1);
+    }
+    if (urgent) thumbQueue.unshift(id); else thumbQueue.push(id);
+    pumpThumbs();
+  }
+  function cancelThumb(id) {
+    const at = thumbQueue.indexOf(String(id));
+    if (at !== -1) thumbQueue.splice(at, 1);
+  }
+  function pumpThumbs() {
+    while (thumbBusy.size < THUMB_CONCURRENCY && thumbQueue.length) {
+      const id = thumbQueue.shift();
+      thumbBusy.add(id);
+      render(); // shows the row's loading state
+      makeThumb(id)
+        .then((url) => cacheThumb(id, url))
+        .catch((e) => thumbFailed.set(id, e.message || String(e)))
+        .finally(() => { thumbBusy.delete(id); render(); pumpThumbs(); });
+    }
+  }
+  async function makeThumb(id) {
+    const f = getIndex().byKey.get(id);
+    if (!f) throw new Error('File not found');
+    // Size is part of the key: a file id never changes content, but this
+    // keeps a stale entry from ever matching a different file.
+    const key = `${id}:${f.size}`;
+    const stored = await thumbStore.get(key);
+    if (stored) return URL.createObjectURL(stored);
+    const res = await getPreviewBytes(f.id);
+    if (!res.ok) throw new Error(res.error || 'Preview failed');
+    const source = new Blob([res.bytes], { type: res.mime });
+    const canvas = categoryFor(f.name) === 'pdf' ? await pdfFirstPage(source) : await downscaleImage(source);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/webp', 0.82));
+    if (!blob) throw new Error("Couldn't make a thumbnail");
+    thumbStore.put(key, blob);
+    return URL.createObjectURL(blob);
+  }
+  // Through an <img> rather than createImageBitmap, which can't read SVG.
+  async function downscaleImage(blob) {
+    const url = URL.createObjectURL(blob);
+    try {
+      const img = new Image();
+      img.src = url;
+      try { await img.decode(); } catch (e) { throw new Error("Can't read this image"); }
+      const w = img.naturalWidth || THUMB_PX;
+      const h = img.naturalHeight || THUMB_PX;
+      const s = Math.min(1, THUMB_PX / Math.max(w, h));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(w * s));
+      c.height = Math.max(1, Math.round(h * s));
+      const g = c.getContext('2d');
+      g.imageSmoothingQuality = 'high';
+      g.drawImage(img, 0, 0, c.width, c.height);
+      return c;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+  async function pdfFirstPage(blob) {
+    const pdfjsLib = await loadPdfjs();
+    const doc = await pdfjsLib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
+    try {
+      const page = await doc.getPage(1);
+      const unscaled = page.getViewport({ scale: 1 });
+      const viewport = page.getViewport({ scale: Math.min(2, THUMB_PX / Math.max(unscaled.width, unscaled.height)) });
+      const c = document.createElement('canvas');
+      c.width = Math.ceil(viewport.width);
+      c.height = Math.ceil(viewport.height);
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff'; // PDFs assume white paper
+      g.fillRect(0, 0, c.width, c.height);
+      await page.render({ canvasContext: g, viewport }).promise;
+      return c;
+    } finally {
+      doc.destroy();
+    }
+  }
+  async function clearThumbnails() {
+    await thumbStore.clear();
+    for (const url of thumbCache.values()) URL.revokeObjectURL(url);
+    thumbCache.clear();
+    thumbFailed.clear();
+    showToast('Thumbnail cache cleared', { kind: 'ok' });
+    render();
+  }
+
+  // The details panel always wants the selected file's thumbnail, first in
+  // line, even with background thumbnails turned off.
+  function ensureDetailThumb(selFile) {
+    if (thumbEligible(selFile)) requestThumb(selFile.id, true);
+  }
+
+  // Watches the list for rows that need a thumbnail. Re-armed after every
+  // rebuild of the list (rows are new nodes each time).
+  let thumbObserver = null;
+  function observeThumbs() {
+    if (thumbObserver) thumbObserver.disconnect();
+    if (!state.autoThumbs || !R.body || typeof IntersectionObserver === 'undefined') return;
+    if (!thumbObserver || thumbObserver.root !== R.body) {
+      thumbObserver = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          const id = e.target.dataset.thumb;
+          if (e.isIntersecting) requestThumb(id); else cancelThumb(id);
+        }
+      }, { root: R.body, rootMargin: '300px 0px' });
+    }
+    R.body.querySelectorAll('[data-thumb]').forEach((el) => thumbObserver.observe(el));
   }
 
   function openPreview(f) {

@@ -1,6 +1,6 @@
 # Data Deletion
 
-_Last updated: 2026-10-25_
+_Last updated: 2026-10-30_
 
 The developer holds no data about you, so there's nothing to request from them. Everything BeanyDrive stores is either in your Discord channel or on your own device, and you can delete all of it yourself.
 
@@ -22,4 +22,4 @@ To make a token useless everywhere it's stored, reset it in the [Discord Develop
 - **Linux:** delete the AppImage and `~/.config/BeanyDrive`.
 - **Android:** Settings → Apps → BeanyDrive → **Storage → Clear storage**, or uninstall the app.
 
-The app-data folder holds the encrypted bot token, connection settings, resume records and the drag-out cache, all described in the [Privacy Policy](PRIVACY.md).
+The app-data folder holds the encrypted bot token, connection settings, resume records, the drag-out cache and the thumbnail cache, all described in the [Privacy Policy](PRIVACY.md). To remove only the thumbnails, use **Settings → Appearance → Clear thumbnail cache**.
