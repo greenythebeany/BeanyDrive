@@ -338,7 +338,7 @@ public class BeanyNativePlugin extends Plugin {
     @PluginMethod
     public void readRange(PluginCall call) {
         String uriStr = call.getString("uri", "");
-        long offset = call.getLong("offset", 0L);
+        long offset = longArg(call, "offset");
         int length = call.getInt("length", 0);
         io.execute(() -> {
             try {
@@ -350,6 +350,13 @@ public class BeanyNativePlugin extends Plugin {
                 call.reject("Couldn't read the file: " + e.getMessage());
             }
         });
+    }
+
+    // PluginCall.getLong only accepts values JSON parsed as Long, so any number
+    // under 2^31 (an Integer) came back as the default: every chunk was read
+    // from offset 0. optLong takes whatever numeric type it was parsed as.
+    private static long longArg(PluginCall call, String name) {
+        return call.getData().optLong(name, 0L);
     }
 
     private byte[] readAt(Uri uri, long offset, int length) throws IOException {
@@ -420,7 +427,7 @@ public class BeanyNativePlugin extends Plugin {
     // (epoch ms), oldest first.
     @PluginMethod
     public void listMedia(PluginCall call) {
-        long since = call.getLong("since", 0L);
+        long since = longArg(call, "since");
         int limit = call.getInt("limit", 50);
         io.execute(() -> {
             try {
