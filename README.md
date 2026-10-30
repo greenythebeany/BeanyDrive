@@ -502,8 +502,10 @@ on, uploads from that device are encrypted:
   after backing up the current index first, so a restore can be undone.
 - **Check drive** reads every message in the channel (about a second per 100)
   and compares it with the index:
-  - **Missing chunks**: files that can't be downloaded any more because part
-    of them was deleted from the channel. They can be removed.
+  - **Damaged files**: files that can't be downloaded whole, because part of
+    them was deleted from the channel, or because fewer bytes were uploaded
+    than the file's size (a photo cut short while it was still saving). They
+    can be removed. Uploads now check every read, so this can't happen again.
   - **Not in the index**: complete files in the channel that the index doesn't
     list, after a restore or a lost index. **Recover** adds them to a
     *Recovered* folder. This is also how a drive whose index is gone entirely

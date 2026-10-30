@@ -22,8 +22,8 @@ const nodeFiles = {
     return {
       async read(offset, length) {
         const buffer = Buffer.alloc(length);
-        await handle.read(buffer, 0, length, offset);
-        return buffer;
+        const { bytesRead } = await handle.read(buffer, 0, length, offset);
+        return bytesRead === length ? buffer : buffer.subarray(0, bytesRead);
       },
       close: () => handle.close(),
     };
