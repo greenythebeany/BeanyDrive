@@ -97,6 +97,22 @@ function concatChunks(parts) {
   return out;
 }
 
+// A read that comes back short means the file changed or isn't fully on disk
+// yet (a photo still syncing, a provider reporting the wrong size). Uploading
+// it anyway stores a cut-off file, so it fails the upload instead.
+function exactReader(reader, name) {
+  return {
+    async read(offset, length) {
+      const data = await reader.read(offset, length);
+      if (data.length !== length) {
+        throw new Error(`Couldn't read all of ${name} (it may still be saving or syncing) — try again once it's complete`);
+      }
+      return data;
+    },
+    close: () => reader.close(),
+  };
+}
+
 // Discord ids carry their creation time.
 function snowflakeTime(id) {
   try { return Number((BigInt(id) >> 22n) + 1420070400000n); } catch (e) { return Date.now(); }
@@ -386,7 +402,7 @@ class DiscordDrive extends Emitter {
     let hash = saved && saved.hash;
     if (!hash && size > 0) {
       this.emit('status', `Checking ${name}…`);
-      const reader = await this.files.openReader(localPath);
+      const reader = exactReader(await this.files.openReader(localPath), name);
       try {
         hash = await hashFile(reader, size, encrypting ? this._dedupSalt : '');
       } finally {
@@ -492,7 +508,7 @@ class DiscordDrive extends Emitter {
       if (onProgress) onProgress(completed, total);
 
       // One reader for the whole attempt; workers read from it by offset.
-      const reader = await this.files.openReader(localPath);
+      const reader = exactReader(await this.files.openReader(localPath), name);
       let nextIdx = 0;
       let failure = null;
 
@@ -642,7 +658,13 @@ class DiscordDrive extends Emitter {
     const msg = await this._request(`/channels/${this.channelId}/messages/${msgId}`);
     const att = msg.attachments && msg.attachments[0];
     if (!att) throw new Error(`Chunk message ${msgId} has no attachment`);
-    return this.api.fetchBinary(att.url);
+    // A connection that drops mid-download can hand back a short body without
+    // an error; that would show as a picture cut off part way.
+    for (let attempt = 1; ; attempt++) {
+      const bytes = await this.api.fetchBinary(att.url);
+      if (!att.size || bytes.length === att.size) return bytes;
+      if (attempt >= 3) throw new Error(`Chunk ${msgId} downloaded incomplete (${bytes.length} of ${att.size} bytes)`);
+    }
   }
 
   getEntry(fileId) {
@@ -1087,10 +1109,23 @@ class DiscordDrive extends Emitter {
       for (const { entry } of this.resumeStore.all()) for (const c of Object.values(entry.chunks || {})) referenced.add(c);
     }
 
+    // Broken: chunks deleted from the channel, or fewer bytes stored than the
+    // file's size (uploaded from a file that was cut short).
     const broken = [];
     for (const f of this.metadata.files) {
       const missing = f.chunks.filter((c) => !scan.chunks.has(c)).length;
-      if (missing) broken.push({ id: f.id, name: f.name, path: f.path, missing, total: f.chunks.length, trashed: f.trashed });
+      if (missing) {
+        broken.push({ id: f.id, name: f.name, path: f.path, missing, total: f.chunks.length, trashed: f.trashed });
+        continue;
+      }
+      const overhead = f.enc ? CHUNK_OVERHEAD : 0;
+      const stored = f.chunks.reduce((n, c) => {
+        const chunk = scan.chunks.get(c);
+        return n + (chunk.empty ? 0 : Math.max(0, chunk.size - overhead));
+      }, 0);
+      if (f.size > 0 && stored < f.size) {
+        broken.push({ id: f.id, name: f.name, path: f.path, missing: 0, total: f.chunks.length, stored, size: f.size, trashed: f.trashed });
+      }
     }
 
     const groups = new Map();

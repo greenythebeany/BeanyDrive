@@ -230,6 +230,42 @@ test('check drive finds broken files and orphans, and repairs them', async () =>
   assert.equal(after.orphans.length, 0);
 });
 
+test('a file that reads short fails the upload instead of storing it cut off', async () => {
+  const { drive, local } = await setup();
+  local.put('/photo.jpg', randomBytes(2500, 41));
+  const stat = local.adapter.stat;
+  local.adapter.stat = async (p) => ({ ...(await stat(p)), size: 3200 }); // still being written
+  await assert.rejects(drive.upload('/photo.jpg', ''), /Couldn't read all of photo\.jpg/);
+  assert.equal(drive.metadata.files.length, 0);
+});
+
+test('a chunk that downloads short is fetched again', async () => {
+  const { drive, local, discord } = await setup();
+  local.put('/a.bin', randomBytes(2500, 42));
+  const entry = await drive.upload('/a.bin', '');
+  const fetchBinary = discord.api.fetchBinary;
+  let cut = 2;
+  discord.api.fetchBinary = async (url) => {
+    const bytes = await fetchBinary(url);
+    return cut-- > 0 ? bytes.slice(0, 100) : bytes;
+  };
+  assert.deepEqual(await drive.fetchBytes(entry.id), local.get('/a.bin'));
+  cut = 10;
+  await assert.rejects(drive.fetchBytes(entry.id), /downloaded incomplete/);
+});
+
+test('check drive reports files stored shorter than their size', async () => {
+  const { drive, local } = await setup();
+  local.put('/cut.jpg', randomBytes(2500, 43));
+  const cut = await drive.upload('/cut.jpg', '');
+  drive.getEntry(cut.id).size = 2900; // what an unchecked short read used to leave
+  const report = await drive.checkDrive();
+  assert.equal(report.broken.length, 1);
+  assert.equal(report.broken[0].missing, 0);
+  assert.equal(report.broken[0].stored, 2500);
+  assert.equal(report.broken[0].size, 2900);
+});
+
 test('check drive rebuilds a drive whose index is gone', async () => {
   const { drive, local, discord } = await setup();
   await drive.setupEncryption('passphrase-123');

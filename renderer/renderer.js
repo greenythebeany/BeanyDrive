@@ -1569,9 +1569,9 @@
       check = `
         <div class="notice ${ok ? 'ok' : ''}">${icon(ok ? 'check' : 'info', 18)}<span>Read ${r.messages} messages. ${r.files - r.broken.length} of ${plural(r.files, 'file')} are intact.${ok ? ' Nothing to fix.' : ''}</span></div>
         ${r.broken.length ? `
-          <h4>Missing chunks</h4>
-          <p class="hint">Part of these files was deleted from the channel, so they can't be downloaded any more.</p>
-          ${r.broken.slice(0, 50).map((b) => `<div class="health-row">${icon('warn', 18)}<div class="grow"><div>${esc(b.name)}</div><div class="hint">${esc(b.path || 'My Drive')} · ${b.missing} of ${b.total} chunks missing</div></div></div>`).join('')}
+          <h4>Damaged files</h4>
+          <p class="hint">Part of these files is gone: deleted from the channel, or never uploaded because the file was cut short while it was read. Upload them again from the original if you still have it.</p>
+          ${r.broken.slice(0, 50).map((b) => `<div class="health-row">${icon('warn', 18)}<div class="grow"><div>${esc(b.name)}</div><div class="hint">${esc(b.path || 'My Drive')} · ${b.missing ? `${b.missing} of ${b.total} chunks missing` : `only ${fmtSize(b.stored)} of ${fmtSize(b.size)} uploaded`}</div></div></div>`).join('')}
           <div class="settings-row"><button class="btn btn-danger" data-act="health-remove-broken" ${busy ? 'disabled' : ''}>Remove ${plural(r.broken.length, 'broken file')}</button></div>` : ''}
         ${complete.length ? `
           <h4>Not in the index</h4>
@@ -2541,7 +2541,7 @@
     }),
     'health-remove-broken': () => openConfirm({
       title: 'Remove broken files?', danger: true, confirmLabel: 'Remove',
-      message: 'They\u2019re missing chunks, so they can\u2019t be downloaded. This takes them out of the drive and deletes what\u2019s left of them.',
+      message: 'Part of each is gone, so they can\u2019t be downloaded whole. This takes them out of the drive and deletes what\u2019s left of them.',
       onConfirm: () => healthAction(api.removeBroken(state.health.report.broken.map((b) => b.id)), (n) => `Removed ${plural(n, 'file')}`),
     }),
     'health-restore': (el) => {
